@@ -1,0 +1,20 @@
+# macOS junk
+.DS_Store
+
+# Shell / R Junk
+.Rhistory
+.open
+
+# Python cache
+__pycache__/
+api/__pycache__/
+
+# Xcode / Swift archive
+DerivedData/
+*.xcuserstate
+*.xcuserdata/
+build/
+
+# Archived SwiftUI prototype
+ios/VitalPrototype/
+
