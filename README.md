@@ -1,2 +1,3 @@
 # Vital
-Cosmetic Health Ingredient Mobile App
+A System for Integrated and Longitudinal Symptom and Exposure Logging and Pattern Recognition
+
