@@ -1,7 +1,10 @@
 from fastapi import FastAPI
 import sqlite3
 
-app = FastAPI()
+app = FastAPI(
+    title = "Vital API",
+    version = "0.1.0",
+    )
 
 @app.get("/health")
 def healthcheck():
@@ -20,3 +23,9 @@ def product_display():
         
     conn.close()
     return product_list
+
+@app.get("/version")
+def version():
+    return {
+        "version": app.version,
+        }
