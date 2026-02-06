@@ -12,7 +12,6 @@ def get_connection():
 
 def initialize_database():
     if not DB_PATH.exists():
-        
         conn = get_connection()
         with open(SCHEMA_PATH, "r") as f:
             schema_sql = f.read()

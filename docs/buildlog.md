@@ -14,3 +14,5 @@ Build Log:
 
 - integrate updated schema.db with db.py using pathlib
 - create api/__init__.py and api/repositories/__init__.py to initialize api repos as packages
+
+- add initial data flow where /events endpoint accepts JSON input with event details, data is then validated and stored in SQLite symptom_event or exposure_event table, and then saved event info and id is returned

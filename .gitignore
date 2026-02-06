@@ -1,7 +1,5 @@
-# macOS junk
+# macOS / Shell / R
 .DS_Store
-
-# Shell / R Junk
 .Rhistory
 .open
 
