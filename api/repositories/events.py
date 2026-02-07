@@ -3,7 +3,7 @@ from api.db import get_connection
 # Pulls list of events when /events reached via get for a given user id to create timeline
 def list_events(user_id: int):
     conn = get_connection()
-    cursor = conn.cursor
+    cursor = conn.cursor()
     # First select reads exposure events, joins items and exposures at item_name, sets event_type to exposure
     # Second select reads symptom events, joins symptoms and events at symptom_name, sets event_type to symptom
     # Union all merges the two lists while preserving all events (doesnt remove duplicate events)

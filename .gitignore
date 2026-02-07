@@ -14,5 +14,5 @@ DerivedData/
 build/
 
 # Archived SwiftUI prototype
-ios/VitalPrototype/
+apps/archive
 

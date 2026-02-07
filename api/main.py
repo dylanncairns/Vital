@@ -64,7 +64,7 @@ def create_event(payload: EventIn):
         
         # branch by event type and validate input format
         if payload.event_type == "exposure":
-             if payload.item_id is None or payload.route_id is None or not payload.route.strip():
+             if payload.item_id is None or payload.route is None or not payload.route.strip():
                 raise HTTPException(status_code = 400, detail = "exposure event requires item and route")
              
              insert_sql = """
@@ -80,7 +80,7 @@ def create_event(payload: EventIn):
                     INSERT INTO symptom_events (user_id, symptom_id, timestamp, severity) 
                     VALUES (?, ?, ?, ?)
                     """
-             insert_params = (payload.user_id, payload.item_id, payload.timestamp, payload.severity,)
+             insert_params = (payload.user_id, payload.symptom_id, payload.timestamp, payload.severity,)
             
         # insert into the appropriate table - determined by exposure type
         conn = get_connection()
