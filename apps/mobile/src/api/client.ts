@@ -1,4 +1,10 @@
-import { TimelineEvent, CreateEventRequest } from "../models/events";
+import {
+  TimelineEvent,
+  CreateEventRequest,
+  CreateEventResponse,
+  TextIngestRequest,
+  TextIngestResponse,
+} from "../models/events";
 
 // Local server address
 const BASE_URL = "http://127.0.0.1:8000";
@@ -14,11 +20,29 @@ export async function fetchEvents(userId: number): Promise<TimelineEvent[]> {
 }
 
 // Sends JSON payload to POST/events 
-export async function createEvent(payload: CreateEventRequest): Promise<void> {
+export async function createEvent(payload: CreateEventRequest): Promise<CreateEventResponse> {
   const res = await fetch(`${BASE_URL}/events`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
-  if (!res.ok) throw new Error("Failed to create event");
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Failed to create event: ${res.status} ${text}`);
+  }
+  return res.json();
+}
+
+// Route used if text blurb entry (later speech-to-text button) - to ingestion pipeline
+export async function ingestTextEvent(payload: TextIngestRequest): Promise<TextIngestResponse> {
+  const res = await fetch(`${BASE_URL}/events/ingest_text`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Failed to ingest text: ${res.status} ${text}`);
+  }
+  return res.json();
 }

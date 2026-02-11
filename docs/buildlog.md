@@ -28,3 +28,58 @@ Build Log:
 - Established end-to-end loop for "Log Event" input form page (post/events endpoint) and a timeline display page (get/events endpoint)
     - archived swiftui clients
     - created apps folder for react native mobile and react web
+
+- updated schema.sql
+    - evidence --> papers (for ingestion of published evidence linking a symptom and ingredient)
+    - derived_features table for storing inputs to model that will compute confidence score for there being strong evidence supporting linkage between a symptom and ingredient based on a user's specific exposures and symptoms patterns
+    - insights table for user-facing confidence score, cited sources, and linked symptoms and ingredients
+    - claims table updated to reference ingredient, symptom, paper, and summary of a potential linkage + evidence_polarity_and_strength (-1 to 1)
+    - added alias tables to handle ingestion of user-logged events/symptoms with different names that reference the same item/event
+        - “Head ache”, “head-ache”, “Headache” all normalize to head ache
+    - added raw_event_ingest staging table
+    - central.db recreated and verified to match new schema
+
+- implemented ingestion pipeline
+    - Rule‑based parsing with placeholder for external API call
+    - writes structured events to db or stores raw text if parsing fails
+        - user input is submitted to endpoint POST/events/ingest_text 
+        - Parser tries to extract event type, time or time range, severity, candidate name which it resolves to canonical ID
+        - if it succeeds it writes to exposure_events or symptoms_events
+        - if it fails it writes to raw_event_ingest
+    - resolve_item_id / resolve_symptom_id normalize ingested input and create canonical IDs
+    - timestamp normalization supports exact timestamp or ingested time range w confidence
+    - room for implementation of voice-to-text input that will be ingested through this same pipeline with parse_with_api function in ingest_text.py
+    - implemented table exposure_expansions, which takes a logged event and references all of the ingredients contained in an item
+        - items_ingredients and ingredients can be joined and rows are inserted into exposure_expansions, which allows candidate symptom/exposure pairs to reference ingredient ids and/or item ids
+        - one feature action = exposure insert and expansion rows succeed or fail together to ensure full writes
+    - incorporated openai API for text parsing first pass, if it fails then use the regex previously established in the bullets above
+
+- updated client.ts, events.ts, logeventscreen.tsx to implement the text blurb input which will later be transferred to voice-to-text
+
+- debugged and improved end-to-end flow
+    - Mobile sends either structured event to POST /events or free text to POST /events/ingest_text
+    - /events:
+        - validates/normalizes payload with normalize_event.py
+        - failures sent to raw_event_ingest table
+        - resolves IDs by name if needed with resolve.py
+        - inserts into exposure_events or symptom_events in main.py if normalized
+        - for exposures, expands item to ingredients via expand_exposure.py
+        - success insert response echoes event payload
+    - /events/ingest_text:
+        - calls ingest_text.py where OpenAI API is called first to attempt to parse input
+        - if API call fails, regex parsing fallback is used
+        - OpenAI output is schema contrained, and if successful event is written as a structured event entry into event table 
+        - if both parsing mechanisms fail to compose output that is valid in schema, text input is written to raw_event_ingest table
+    - JSON status field used as truth source for success/failure of event logging 
+        - NormalizationError catches incompatibilities in event normalization
+        - errors storing events into DB, parsing failure, ingestion failure all handled
+    - insertions into tables are atomic operations (executes as a single complete step to prevent data corruption)
+
+- update UI for timeline to properly handle multiple dates
+    - ingestion now handles user input as according to their local time, stores in backend with standardized UTC time, and displays on timeline with their local time
+- lots of ingestion pipeline debugging
+    - fixed route identification
+    - allowed for a multi-item exposure split 
+        - ie "ate steak and potatoes" splits into exposure event for ingestion of steak and exposure event for ingestion of potatoes
+        - fixed logging failure when timestamp given as "morning", "afternoon" etc
+    - next version will remove most of the regex in ingestion pipeline and outsource parsing to LLM api calls with strict formatting rules, as regex cannot keep up with the variety in user input

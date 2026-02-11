@@ -12,7 +12,7 @@ def list_events(user_id: int):
             e.id AS id,
             'exposure' AS event_type,
             e.user_id AS user_id,
-            e.timestamp AS timestamp,
+            COALESCE(e.timestamp, e.time_range_start) AS timestamp,
             e.item_id AS item_id,
             i.name AS item_name,
             e.route AS route,
@@ -28,7 +28,7 @@ def list_events(user_id: int):
             s.id AS id,
             'symptom' AS event_type,
             s.user_id AS user_id,
-            s.timestamp AS timestamp,
+            COALESCE(s.timestamp, s.time_range_start) AS timestamp,
             NULL AS item_id,
             NULL AS item_name,
             NULL AS route,
@@ -39,7 +39,7 @@ def list_events(user_id: int):
         JOIN symptoms sy ON sy.id = s.symptom_id
         WHERE s.user_id = ?
         
-        ORDER BY timestamp
+        ORDER BY timestamp DESC
         """,
         (user_id, user_id,)
     )
