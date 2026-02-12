@@ -21,13 +21,27 @@ MAX_LAG_WINDOW = LAG_BUCKETS[-1][2]
 def _now_iso() -> str:
     return datetime.now(tz=timezone.utc).isoformat()
 
-def _parse_iso(value: str) -> datetime:
-    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+def _parse_iso(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 def _route_key(route: str | None) -> str | None:
     if route is None:
         return None
     return route.strip().lower() or None
+
+
+def _coerce_int_or_none(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 # each lag is assigned to first matching bucket, converting lag into retrivable categories
 def _lag_bucket_label(lag: timedelta) -> str | None:
@@ -67,6 +81,46 @@ class CandidateAggregate:
     exposure_with_ingredients_count: int = 0
     latest_symptom_ts: datetime | None = None
 
+
+@dataclass
+class IngredientAggregate:
+    user_id: int
+    ingredient_id: int
+    symptom_id: int
+    lags_minutes: list[float] = field(default_factory=list)
+    symptom_severity_values: list[int] = field(default_factory=list)
+    exposure_event_ids: set[int] = field(default_factory=set)
+    symptom_event_ids: set[int] = field(default_factory=set)
+    routes: set[str] = field(default_factory=set)
+    lag_bucket_counts: dict[str, int] = field(default_factory=dict)
+    latest_symptom_ts: datetime | None = None
+
+
+def _fetch_exposure_ingredients(user_id: int) -> dict[int, set[int]]:
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT e.id AS exposure_event_id, x.ingredient_id AS ingredient_id
+            FROM exposure_events e
+            JOIN exposure_expansions x ON x.exposure_event_id = e.id
+            WHERE e.user_id = ?
+              AND x.ingredient_id IS NOT NULL
+            """,
+            (user_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+    mapping: dict[int, set[int]] = {}
+    for row in rows:
+        event_id = row["exposure_event_id"]
+        ingredient_id = row["ingredient_id"]
+        if ingredient_id is None:
+            continue
+        mapping.setdefault(event_id, set()).add(int(ingredient_id))
+    return mapping
+
+
 def _fetch_exposures(user_id: int) -> list[ExposureEvent]:
     conn = get_connection()
     try:
@@ -89,16 +143,21 @@ def _fetch_exposures(user_id: int) -> list[ExposureEvent]:
         ).fetchall()
     finally:
         conn.close()
-    return [
-        ExposureEvent(
-            event_id=row["event_id"],
-            item_id=row["item_id"],
-            event_ts=_parse_iso(row["event_ts"]),
-            route=_route_key(row["route"]),
-            has_expansion=bool(row["has_expansion"]),
+    out: list[ExposureEvent] = []
+    for row in rows:
+        parsed_ts = _parse_iso(row["event_ts"])
+        if parsed_ts is None:
+            continue
+        out.append(
+            ExposureEvent(
+                event_id=row["event_id"],
+                item_id=row["item_id"],
+                event_ts=parsed_ts,
+                route=_route_key(row["route"]),
+                has_expansion=bool(row["has_expansion"]),
+            )
         )
-        for row in rows
-    ]
+    return out
 
 def _fetch_symptoms(user_id: int) -> list[SymptomEvent]:
     conn = get_connection()
@@ -119,24 +178,38 @@ def _fetch_symptoms(user_id: int) -> list[SymptomEvent]:
         ).fetchall()
     finally:
         conn.close()
-    return [
-        SymptomEvent(
-            event_id=row["event_id"],
-            symptom_id=row["symptom_id"],
-            event_ts=_parse_iso(row["event_ts"]),
-            severity=row["severity"],
+    out: list[SymptomEvent] = []
+    for row in rows:
+        parsed_ts = _parse_iso(row["event_ts"])
+        if parsed_ts is None:
+            continue
+        out.append(
+            SymptomEvent(
+                event_id=row["event_id"],
+                symptom_id=row["symptom_id"],
+                event_ts=parsed_ts,
+                severity=_coerce_int_or_none(row["severity"]),
+            )
         )
-        for row in rows
-    ]
+    return out
 
 # builds candidates out of exposures and symptoms
 # multiple candidates can be build from same exposure and symptom patterns but with different temporal windows
 def _build_candidate_aggregates(
     user_id: int,
-) -> tuple[dict[tuple[int, int], CandidateAggregate], int, list[ExposureEvent], list[SymptomEvent]]:
+) -> tuple[
+    dict[tuple[int, int], CandidateAggregate],
+    dict[tuple[int, int], IngredientAggregate],
+    int,
+    list[ExposureEvent],
+    list[SymptomEvent],
+    dict[int, set[int]],
+]:
     exposures = _fetch_exposures(user_id)
     symptoms = _fetch_symptoms(user_id)
+    exposure_ingredients = _fetch_exposure_ingredients(user_id)
     aggregates: dict[tuple[int, int], CandidateAggregate] = {}
+    ingredient_aggregates: dict[tuple[int, int], IngredientAggregate] = {}
     pair_count = 0
 
     # logic for candidate generation, ensuring realistic potential linkage
@@ -175,22 +248,65 @@ def _build_candidate_aggregates(
             if candidate.latest_symptom_ts is None or symptom.event_ts > candidate.latest_symptom_ts:
                 candidate.latest_symptom_ts = symptom.event_ts
 
-    return aggregates, pair_count, exposures, symptoms
+            ingredient_ids = exposure_ingredients.get(exposure.event_id, set())
+            for ingredient_id in ingredient_ids:
+                ingredient_key = (ingredient_id, symptom.symptom_id)
+                ingredient_candidate = ingredient_aggregates.get(ingredient_key)
+                if ingredient_candidate is None:
+                    ingredient_candidate = IngredientAggregate(
+                        user_id=user_id,
+                        ingredient_id=ingredient_id,
+                        symptom_id=symptom.symptom_id,
+                    )
+                    ingredient_aggregates[ingredient_key] = ingredient_candidate
+                ingredient_candidate.lags_minutes.append(lag.total_seconds() / 60.0)
+                ingredient_candidate.exposure_event_ids.add(exposure.event_id)
+                ingredient_candidate.symptom_event_ids.add(symptom.event_id)
+                if exposure.route:
+                    ingredient_candidate.routes.add(exposure.route)
+                ingredient_candidate.lag_bucket_counts[bucket] = (
+                    ingredient_candidate.lag_bucket_counts.get(bucket, 0) + 1
+                )
+                if symptom.severity is not None:
+                    ingredient_candidate.symptom_severity_values.append(symptom.severity)
+                if (
+                    ingredient_candidate.latest_symptom_ts is None
+                    or symptom.event_ts > ingredient_candidate.latest_symptom_ts
+                ):
+                    ingredient_candidate.latest_symptom_ts = symptom.event_ts
+
+    return aggregates, ingredient_aggregates, pair_count, exposures, symptoms, exposure_ingredients
 
 
 def recompute_insights(user_id: int) -> dict[str, int]:
-    aggregates, pair_count, exposures, symptoms = _build_candidate_aggregates(user_id)
+    (
+        aggregates,
+        ingredient_aggregates,
+        pair_count,
+        exposures,
+        symptoms,
+        exposure_ingredients,
+    ) = _build_candidate_aggregates(user_id)
 
     conn = get_connection()
     now_iso = _now_iso()
     inserted = 0
     try:
         conn.execute("DELETE FROM insights WHERE user_id = ?", (user_id,))
+        conn.execute("DELETE FROM derived_features_ingredients WHERE user_id = ?", (user_id,))
 
         for candidate in aggregates.values():
+            if not candidate.lags_minutes:
+                continue
             lag_min = min(candidate.lags_minutes)
             lag_avg = sum(candidate.lags_minutes) / len(candidate.lags_minutes)
             cooccurrence_count = len(candidate.lags_minutes)
+            cooccurrence_unique_symptom_count = len(candidate.symptom_event_ids)
+            pair_density = (
+                cooccurrence_count / cooccurrence_unique_symptom_count
+                if cooccurrence_unique_symptom_count > 0
+                else None
+            )
 
             if candidate.latest_symptom_ts is None:
                 continue
@@ -217,14 +333,17 @@ def recompute_insights(user_id: int) -> dict[str, int]:
                 """
                 INSERT INTO derived_features (
                     user_id, item_id, symptom_id, time_gap_min_minutes, time_gap_avg_minutes,
-                    cooccurrence_count, exposure_count_7d, symptom_count_7d, severity_avg_after, computed_at
+                    cooccurrence_count, cooccurrence_unique_symptom_count, pair_density,
+                    exposure_count_7d, symptom_count_7d, severity_avg_after, computed_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(user_id, item_id, symptom_id)
                 DO UPDATE SET
                     time_gap_min_minutes = excluded.time_gap_min_minutes,
                     time_gap_avg_minutes = excluded.time_gap_avg_minutes,
                     cooccurrence_count = excluded.cooccurrence_count,
+                    cooccurrence_unique_symptom_count = excluded.cooccurrence_unique_symptom_count,
+                    pair_density = excluded.pair_density,
                     exposure_count_7d = excluded.exposure_count_7d,
                     symptom_count_7d = excluded.symptom_count_7d,
                     severity_avg_after = excluded.severity_avg_after,
@@ -237,6 +356,8 @@ def recompute_insights(user_id: int) -> dict[str, int]:
                     lag_min,
                     lag_avg,
                     cooccurrence_count,
+                    cooccurrence_unique_symptom_count,
+                    pair_density,
                     exposure_count_7d,
                     symptom_count_7d,
                     severity_avg_after,
@@ -297,6 +418,76 @@ def recompute_insights(user_id: int) -> dict[str, int]:
                 ),
             )
             inserted += 1
+
+        for ingredient_candidate in ingredient_aggregates.values():
+            if not ingredient_candidate.lags_minutes:
+                continue
+            if ingredient_candidate.latest_symptom_ts is None:
+                continue
+
+            lag_min = min(ingredient_candidate.lags_minutes)
+            lag_avg = sum(ingredient_candidate.lags_minutes) / len(ingredient_candidate.lags_minutes)
+            cooccurrence_count = len(ingredient_candidate.lags_minutes)
+            cooccurrence_unique_symptom_count = len(ingredient_candidate.symptom_event_ids)
+            pair_density = (
+                cooccurrence_count / cooccurrence_unique_symptom_count
+                if cooccurrence_unique_symptom_count > 0
+                else None
+            )
+            window_start = ingredient_candidate.latest_symptom_ts - ROLLING_WINDOW
+            exposure_count_7d = sum(
+                1
+                for event in exposures
+                if window_start <= event.event_ts <= ingredient_candidate.latest_symptom_ts
+                and ingredient_candidate.ingredient_id in exposure_ingredients.get(event.event_id, set())
+            )
+            symptom_count_7d = sum(
+                1
+                for event in symptoms
+                if event.symptom_id == ingredient_candidate.symptom_id
+                and window_start <= event.event_ts <= ingredient_candidate.latest_symptom_ts
+            )
+            severity_avg_after = (
+                sum(ingredient_candidate.symptom_severity_values)
+                / len(ingredient_candidate.symptom_severity_values)
+                if ingredient_candidate.symptom_severity_values
+                else None
+            )
+            conn.execute(
+                """
+                INSERT INTO derived_features_ingredients (
+                    user_id, ingredient_id, symptom_id, time_gap_min_minutes, time_gap_avg_minutes,
+                    cooccurrence_count, cooccurrence_unique_symptom_count, pair_density,
+                    exposure_count_7d, symptom_count_7d, severity_avg_after, computed_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id, ingredient_id, symptom_id)
+                DO UPDATE SET
+                    time_gap_min_minutes = excluded.time_gap_min_minutes,
+                    time_gap_avg_minutes = excluded.time_gap_avg_minutes,
+                    cooccurrence_count = excluded.cooccurrence_count,
+                    cooccurrence_unique_symptom_count = excluded.cooccurrence_unique_symptom_count,
+                    pair_density = excluded.pair_density,
+                    exposure_count_7d = excluded.exposure_count_7d,
+                    symptom_count_7d = excluded.symptom_count_7d,
+                    severity_avg_after = excluded.severity_avg_after,
+                    computed_at = excluded.computed_at
+                """,
+                (
+                    ingredient_candidate.user_id,
+                    ingredient_candidate.ingredient_id,
+                    ingredient_candidate.symptom_id,
+                    lag_min,
+                    lag_avg,
+                    cooccurrence_count,
+                    cooccurrence_unique_symptom_count,
+                    pair_density,
+                    exposure_count_7d,
+                    symptom_count_7d,
+                    severity_avg_after,
+                    now_iso,
+                ),
+            )
 
         conn.commit()
     except Exception:

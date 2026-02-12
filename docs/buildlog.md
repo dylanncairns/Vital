@@ -114,3 +114,18 @@ Build Log:
     - removed old uncalled files (items.py and symptoms.py)
     - added raw_event_ingest and removed duplicate logic found in main and ingest_text
     - added time_utils and removed duplicate logic found in normalize_event and ingest_text
+
+
+- validated feature computation
+    - added tests for feature math and time window logic
+        - verified lag minimum and average, coocurrence handling, number of features generated, severity inference average, insight scores, retrival run endpoint
+        - validated recompute handling of improper timestamps and ensured it does not crash upon invalid context for feature generation
+- added defensive handling in insight generation to cover invalid rows, empty lag arrays, overeager error throwing
+- added new derived feature fields (cooccurrence_unique_symptom_count and pair_density) while keeping existing cooccurrence_count as raw pair count for backward compatibility
+- implemented dual and equal feature generation for items and ingredients with rollback from ingredient to item only where items_ingredients event expansion occurred
+- implemented migration that add missing columns for existing DBs with _column_exists checks
+
+- order of operations from current state
+    - implement RAG evidence/citation retrival
+    - implement XGBoost inference path and model correlation score + evidence strength score
+    - update UI to properly display insight computation output

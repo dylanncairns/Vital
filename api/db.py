@@ -89,9 +89,46 @@ def _migration_001_insight_and_rag_scaffolding(conn: sqlite3.Connection) -> None
         ON claims(ingredient_id, symptom_id, paper_id)
         """
     )
+
+# to add missing columns for existing DBs
+def _migration_002_cooccurrence_semantics(conn: sqlite3.Connection) -> None:
+    derived_feature_columns = [
+        ("cooccurrence_unique_symptom_count", "INTEGER"),
+        ("pair_density", "REAL"),
+    ]
+    for column_name, column_type in derived_feature_columns:
+        if not _column_exists(conn, "derived_features", column_name):
+            conn.execute(f"ALTER TABLE derived_features ADD COLUMN {column_name} {column_type}")
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS derived_features_ingredients (
+            id INTEGER NOT NULL PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            ingredient_id INTEGER NOT NULL,
+            symptom_id INTEGER NOT NULL,
+            time_gap_min_minutes REAL,
+            time_gap_avg_minutes REAL,
+            cooccurrence_count INTEGER,
+            cooccurrence_unique_symptom_count INTEGER,
+            pair_density REAL,
+            exposure_count_7d INTEGER,
+            symptom_count_7d INTEGER,
+            severity_avg_after REAL,
+            computed_at TEXT,
+            UNIQUE (user_id, ingredient_id, symptom_id),
+            FOREIGN KEY (user_id) REFERENCES users(id),
+            FOREIGN KEY (ingredient_id) REFERENCES ingredients(id),
+            FOREIGN KEY (symptom_id) REFERENCES symptoms(id)
+        )
+        """
+    )
+
+
 def _apply_migrations(conn: sqlite3.Connection) -> None:
     migrations: list[Callable[[sqlite3.Connection], None]] = [
         _migration_001_insight_and_rag_scaffolding,
+        _migration_002_cooccurrence_semantics,
     ]
     for migration in migrations:
         migration(conn)

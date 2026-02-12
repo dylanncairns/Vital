@@ -124,6 +124,8 @@ CREATE TABLE derived_features (
     time_gap_min_minutes REAL,
     time_gap_avg_minutes REAL,
     cooccurrence_count INTEGER,
+    cooccurrence_unique_symptom_count INTEGER,
+    pair_density REAL,
     exposure_count_7d INTEGER,
     symptom_count_7d INTEGER,
     severity_avg_after REAL,
@@ -131,6 +133,25 @@ CREATE TABLE derived_features (
     UNIQUE (user_id, item_id, symptom_id),
     FOREIGN KEY (user_id) REFERENCES users(id),
     FOREIGN KEY (item_id) REFERENCES items(id),
+    FOREIGN KEY (symptom_id) REFERENCES symptoms(id)
+);
+CREATE TABLE derived_features_ingredients (
+    id INTEGER NOT NULL PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    ingredient_id INTEGER NOT NULL,
+    symptom_id INTEGER NOT NULL,
+    time_gap_min_minutes REAL,
+    time_gap_avg_minutes REAL,
+    cooccurrence_count INTEGER,
+    cooccurrence_unique_symptom_count INTEGER,
+    pair_density REAL,
+    exposure_count_7d INTEGER,
+    symptom_count_7d INTEGER,
+    severity_avg_after REAL,
+    computed_at TEXT,
+    UNIQUE (user_id, ingredient_id, symptom_id),
+    FOREIGN KEY (user_id) REFERENCES users(id),
+    FOREIGN KEY (ingredient_id) REFERENCES ingredients(id),
     FOREIGN KEY (symptom_id) REFERENCES symptoms(id)
 );
 CREATE TABLE insights (
