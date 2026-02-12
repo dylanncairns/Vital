@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from typing import Protocol, TypedDict
 
@@ -61,6 +62,64 @@ def _to_utc_iso(value: str | None) -> str | None:
     return parsed.astimezone(timezone.utc).isoformat()
 
 
+_NON_ALNUM = re.compile(r"[^a-z0-9]+")
+ROUTE_ALIASES = {
+    # ingestion / oral
+    "oral": "ingestion",
+    "po": "ingestion",
+    "by mouth": "ingestion",
+    "mouth": "ingestion",
+    "ate": "ingestion",
+    "eaten": "ingestion",
+    "drink": "ingestion",
+    "drank": "ingestion",
+    "swallowed": "ingestion",
+    "ingested": "ingestion",
+    # dermal / topical
+    "topical": "dermal",
+    "skin": "dermal",
+    "cutaneous": "dermal",
+    "transdermal": "dermal",
+    "applied": "dermal",
+    "rubbed": "dermal",
+    # inhalation
+    "inhale": "inhalation",
+    "inhaled": "inhalation",
+    "smoked": "inhalation",
+    "vaped": "inhalation",
+    "nasal": "inhalation",
+    "intranasal": "inhalation",
+    # injection
+    "iv": "injection",
+    "intravenous": "injection",
+    "im": "injection",
+    "intramuscular": "injection",
+    "subq": "injection",
+    "sq": "injection",
+    "subcutaneous": "injection",
+    "shot": "injection",
+    "injected": "injection",
+}
+ROUTE_ALLOWED = {"ingestion", "inhalation", "dermal", "injection", "unknown"}
+
+def _normalize_route_token(route: str) -> str:
+    value = route.strip().lower()
+    value = _NON_ALNUM.sub(" ", value)
+    return " ".join(value.split())
+
+
+def normalize_route(route: str | None, strict: bool = True) -> str | None:
+    if route is None:
+        return None
+    normalized = _normalize_route_token(route)
+    normalized = ROUTE_ALIASES.get(normalized, normalized)
+    if normalized not in ROUTE_ALLOWED:
+        if strict:
+            raise NormalizationError(f"unsupported route: {route}")
+        return "unknown"
+    return normalized
+
+
 def normalize_event(payload: EventPayload) -> NormalizedEvent:
     # require either exact timestamp or a time range & set confidence
     timestamp_value = None
@@ -89,6 +148,8 @@ def normalize_event(payload: EventPayload) -> NormalizedEvent:
                 raise NormalizationError("exposure event requires item_id or item_name")
         if payload.route is None or not payload.route.strip():
             raise NormalizationError("exposure event requires route")
+        # ensures canonical route integrity for API writes
+        normalized_route = normalize_route(payload.route, strict=True)
         # keep mutually exclusive fields clean
         symptom_id = None
     else:
@@ -100,6 +161,7 @@ def normalize_event(payload: EventPayload) -> NormalizedEvent:
                 raise NormalizationError("symptom event requires symptom_id or symptom_name")
         # keep mutually exclusive fields clean
         item_id = None
+        normalized_route = None
 
     # output normalized dict payload for db insert
     return {
@@ -111,7 +173,7 @@ def normalize_event(payload: EventPayload) -> NormalizedEvent:
         "time_confidence": time_confidence,
         "raw_text": payload.raw_text,
         "item_id": item_id,
-        "route": payload.route,
+        "route": normalized_route,
         "symptom_id": symptom_id,
         "severity": payload.severity,
         "ingested_at": datetime.now(tz=timezone.utc).isoformat(),

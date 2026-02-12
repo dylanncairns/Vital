@@ -101,7 +101,16 @@ CREATE TABLE claims (
     ingredient_id INTEGER NOT NULL,
     symptom_id INTEGER NOT NULL,
     paper_id INTEGER NOT NULL,
+    claim_type TEXT,
     summary TEXT,
+    chunk_index INTEGER,
+    chunk_text TEXT,
+    chunk_hash TEXT,
+    embedding_model TEXT,
+    embedding_vector TEXT,
+    citation_title TEXT,
+    citation_url TEXT,
+    citation_snippet TEXT,
     evidence_polarity_and_strength INTEGER,
     FOREIGN KEY (ingredient_id) REFERENCES ingredients(id),
     FOREIGN KEY (symptom_id) REFERENCES symptoms(id),
@@ -132,8 +141,28 @@ CREATE TABLE insights (
     model_score REAL,
     evidence_score REAL,
     final_score REAL,
+    evidence_summary TEXT,
+    evidence_strength_score REAL,
+    model_probability REAL,
+    display_decision_reason TEXT,
+    citations_json TEXT,
     created_at TEXT,
     FOREIGN KEY (user_id) REFERENCES users(id),
     FOREIGN KEY (item_id) REFERENCES items(id),
     FOREIGN KEY (symptom_id) REFERENCES symptoms(id)
 );
+CREATE TABLE retrieval_runs (
+    id INTEGER NOT NULL PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    item_id INTEGER NOT NULL,
+    symptom_id INTEGER NOT NULL,
+    query_key TEXT NOT NULL,
+    top_k INTEGER NOT NULL,
+    retrieved_count INTEGER NOT NULL,
+    created_at TEXT,
+    FOREIGN KEY (user_id) REFERENCES users(id),
+    FOREIGN KEY (item_id) REFERENCES items(id),
+    FOREIGN KEY (symptom_id) REFERENCES symptoms(id)
+);
+CREATE INDEX idx_claims_ingredient_symptom_paper ON claims(ingredient_id, symptom_id, paper_id);
+CREATE INDEX idx_retrieval_runs_user_item_symptom ON retrieval_runs(user_id, item_id, symptom_id);

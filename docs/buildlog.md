@@ -83,3 +83,29 @@ Build Log:
         - ie "ate steak and potatoes" splits into exposure event for ingestion of steak and exposure event for ingestion of potatoes
         - fixed logging failure when timestamp given as "morning", "afternoon" etc
     - next version will remove most of the regex in ingestion pipeline and outsource parsing to LLM api calls with strict formatting rules, as regex cannot keep up with the variety in user input
+
+- upgraded from pure event logging to a foundation for insight generation
+    - production skeleton for linkage insight generation built, UI unchanged
+    - Updated route alias mapping with token normalization
+    - Added migration framework and startup migrations in db.py
+        - Implemented scaffolding for future RAG evidence/citation retrival
+        - Migration runner allows existing DB to continually get upgraded as schema evolves, since model code will expect columns that old DB versions may not have
+            - prevents runtime failures
+    - Refined normalization calls in ingestion pipeline and ensure normalized output before writing to DB, ensuring text ingest and /events share canonical route names
+        - standardized at ingestion so downstream analytics are consistent, preventing semantic drift from fragmenting generated candidates
+    - Added insights API endpoint to main.py
+        - post/insights/recompute computes insights for a user and get/insights lists structured computed insights
+            - backend endpoints created, frontend will eventually display insights on timeline but yet to be implemented
+    - Added ML folder currently containing insights.py
+        - generates candidate linkages between symptoms and exposure patterns
+        - define unit of analysis as exposure-symptom pairs and preseve temporal shape as opposed to raw cooccurence, letting lag buckets capture timing patterns that can affect linkage plausability
+            - lag bucket logic supports a multitude of candidate linkages depending on temporal patterns of exposure even if between the same symptom and exposure by aggregating per item id and symptom id, storing bucket counts in lag_bucket_counts rather than separating into persisted candidate rows for each temporal candidate
+            - derived_features generates and stores derived features for model input into DB
+            - insights and retrival_runs are placeholder structured output
+                - next will build RAG retrival of citation and evidence
+                - for now just locked API contracts between insights and main endpoints
+    - updated schema for claims and insights
+        - expansion to prepare for evidence retrival
+        - added retrival_runs for context of where candidate linkages are generated from when retriving evidence
+    - most recent commit is fully backend logic and preparation for insight generation models as stated above, no frontend implementation yet
+    - next versions will include RAG evidence retrival, then model scoring, then UI update to add insights to timeline 

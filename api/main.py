@@ -10,6 +10,7 @@ from api.repositories.events import list_events
 from ingestion.expand_exposure import expand_exposure_event
 from ingestion.ingest_text import ingest_text_event
 from ingestion.normalize_event import NormalizationError, NormalizedEvent, normalize_event
+from ml.insights import list_insights, recompute_insights
 
 app = FastAPI(
     title="Vital API",
@@ -69,6 +70,40 @@ class TextIngestOut(BaseModel):
     event_type: Optional[str] = None
     resolution: Optional[str] = None
     reason: Optional[str] = None
+
+
+class RecomputeInsightsIn(BaseModel):
+    user_id: int
+
+
+class RecomputeInsightsOut(BaseModel):
+    status: str
+    user_id: int
+    candidates_considered: int
+    pairs_evaluated: int
+    insights_written: int
+
+
+class InsightCitationOut(BaseModel):
+    title: Optional[str] = None
+    url: Optional[str] = None
+    snippet: Optional[str] = None
+    evidence_polarity_and_strength: Optional[int] = None
+
+
+class InsightOut(BaseModel):
+    id: int
+    user_id: int
+    item_id: int
+    item_name: str
+    symptom_id: int
+    symptom_name: str
+    model_probability: Optional[float] = None
+    evidence_strength_score: Optional[float] = None
+    evidence_summary: Optional[str] = None
+    display_decision_reason: Optional[str] = None
+    created_at: Optional[str] = None
+    citations: list[InsightCitationOut]
 
 
 def _event_response(event_id: int, event: dict, status: str | None = None, resolution: str | None = None) -> dict:
@@ -182,6 +217,21 @@ def ingest_text(payload: TextIngestIn):
     if not payload.raw_text.strip():
         return {"status": "ignored", "reason": "empty_raw_text"}
     return ingest_text_event(payload.user_id, payload.raw_text)
+
+# compute insights for user 
+@app.post("/insights/recompute", response_model=RecomputeInsightsOut)
+def recompute_user_insights(payload: RecomputeInsightsIn):
+    result = recompute_insights(payload.user_id)
+    return {
+        "status": "ok",
+        "user_id": payload.user_id,
+        **result,
+    }
+
+# list insights per user
+@app.get("/insights", response_model=list[InsightOut])
+def get_insights(user_id: int, include_suppressed: bool = True):
+    return list_insights(user_id=user_id, include_suppressed=include_suppressed)
 
 # store event in loose ends table if ingestion failure
 def _store_raw_event(user_id: int | None, payload, error: str):

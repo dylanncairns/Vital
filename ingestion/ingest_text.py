@@ -12,6 +12,7 @@ from urllib import error, request
 
 from api.db import get_connection
 from ingestion.expand_exposure import expand_exposure_event
+from ingestion.normalize_event import normalize_route
 from api.repositories.resolve import resolve_item_id, resolve_symptom_id
 
 # normalized complete parse result to log for ingested input
@@ -53,8 +54,6 @@ _DATE_TOKEN_RE = re.compile(
 )
 
 _LOCAL_TZ = datetime.now().astimezone().tzinfo or timezone.utc
-
-_ROUTE_OPTIONS = {"ingestion", "inhalation", "topical", "injection", "unknown"}
 
 # identify time from within text blob (safe for voice-to-text where user states timestamp)
 def _parse_time(text: str) -> tuple[str | None, str | None, str | None]:
@@ -423,8 +422,12 @@ def parse_with_api(text: str) -> ParsedEvent | None:
                 item_id = resolve_item_id(_clean_candidate_text(item_name))
         if item_id is None:
             return None
-        if not isinstance(route, str) or route not in _ROUTE_OPTIONS:
-            route = _infer_route(text)
+        if isinstance(route, str):
+            route = normalize_route(route, strict=False)
+        else:
+            route = "unknown"
+        if route == "unknown":
+            route = normalize_route(_infer_route(text), strict=False)
         symptom_id = None
         severity = None
     else:
@@ -502,6 +505,7 @@ def ingest_text_event(user_id: int, raw_text: str) -> dict:
     now = datetime.now(tz=timezone.utc).isoformat()
     if parsed.event_type == "exposure":
         route = parsed.route or _infer_route(raw_text)
+        route = normalize_route(route, strict=False)
         split_names = _split_exposure_items(raw_text) if route == "ingestion" else []
         item_ids = [resolve_item_id(name) for name in split_names] if len(split_names) > 1 else [parsed.item_id]
         for item_id in item_ids:
