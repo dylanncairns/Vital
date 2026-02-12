@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from typing import Protocol, TypedDict
 
 from api.repositories.resolve import resolve_item_id, resolve_symptom_id
+from ingestion.time_utils import to_utc_iso
 
 # lets main catch specific validation failures and separates from DB/runtime errors
 class NormalizationError(ValueError):
@@ -47,19 +48,10 @@ class NormalizedEvent(TypedDict):
 
 # normalize timestamps, handling user entry of "3pm" which refers to their local time
 def _to_utc_iso(value: str | None) -> str | None:
-    if value is None:
-        return None
-    text = value.strip()
-    if not text:
-        return None
     try:
-        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return to_utc_iso(value, strict=True)
     except ValueError as exc:
         raise NormalizationError(f"invalid datetime format: {value}") from exc
-    if parsed.tzinfo is None:
-        local_tz = datetime.now().astimezone().tzinfo
-        parsed = parsed.replace(tzinfo=local_tz)
-    return parsed.astimezone(timezone.utc).isoformat()
 
 
 _NON_ALNUM = re.compile(r"[^a-z0-9]+")

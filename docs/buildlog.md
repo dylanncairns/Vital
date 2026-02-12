@@ -109,3 +109,8 @@ Build Log:
         - added retrival_runs for context of where candidate linkages are generated from when retriving evidence
     - most recent commit is fully backend logic and preparation for insight generation models as stated above, no frontend implementation yet
     - next versions will include RAG evidence retrival, then model scoring, then UI update to add insights to timeline 
+
+- cleaned up some duplicate engineering logic
+    - removed old uncalled files (items.py and symptoms.py)
+    - added raw_event_ingest and removed duplicate logic found in main and ingest_text
+    - added time_utils and removed duplicate logic found in normalize_event and ingest_text

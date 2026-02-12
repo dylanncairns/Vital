@@ -1,12 +1,12 @@
 import json
 import sqlite3
-from datetime import datetime, timezone
 from typing import Optional
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
 
 from api.db import get_connection, initialize_database
 from api.repositories.events import list_events
+from api.repositories.raw_event_ingest import insert_raw_event_ingest
 from ingestion.expand_exposure import expand_exposure_event
 from ingestion.ingest_text import ingest_text_event
 from ingestion.normalize_event import NormalizationError, NormalizedEvent, normalize_event
@@ -193,14 +193,14 @@ def create_event(payload: EventIn):
     except NormalizationError as exc:
         payload_dict = payload.model_dump()
         # keep failed payload for later parsing/review in raw_event_ingest table
-        _store_raw_event(payload.user_id, payload_dict, str(exc))
+        insert_raw_event_ingest(payload.user_id, json.dumps(payload_dict), "failed", str(exc))
         return _event_response(-1, payload_dict, status="queued", resolution="pending")
 
     try:
         created_id = _insert_event_and_expand(normalized)
     except sqlite3.DatabaseError as exc:
         # db write failed, queue for retry/review instead of surfacing stack trace
-        _store_raw_event(normalized["user_id"], normalized, str(exc))
+        insert_raw_event_ingest(normalized["user_id"], json.dumps(normalized), "failed", str(exc))
         return _event_response(-1, normalized, status="queued", resolution="db_error")
 
     return _event_response(created_id, normalized)
@@ -232,22 +232,3 @@ def recompute_user_insights(payload: RecomputeInsightsIn):
 @app.get("/insights", response_model=list[InsightOut])
 def get_insights(user_id: int, include_suppressed: bool = True):
     return list_insights(user_id=user_id, include_suppressed=include_suppressed)
-
-# store event in loose ends table if ingestion failure
-def _store_raw_event(user_id: int | None, payload, error: str):
-    conn = get_connection()
-    conn.execute(
-        """
-        INSERT INTO raw_event_ingest (user_id, raw_text, ingested_at, parse_status, error)
-        VALUES (?, ?, ?, ?, ?)
-        """,
-        (
-            user_id,
-            json.dumps(payload),
-            datetime.now(tz=timezone.utc).isoformat(),
-            "failed",
-            error,
-        ),
-    )
-    conn.commit()
-    conn.close()

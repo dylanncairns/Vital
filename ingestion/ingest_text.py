@@ -11,8 +11,10 @@ from datetime import datetime, timedelta, timezone
 from urllib import error, request
 
 from api.db import get_connection
+from api.repositories.raw_event_ingest import insert_raw_event_ingest
 from ingestion.expand_exposure import expand_exposure_event
 from ingestion.normalize_event import normalize_route
+from ingestion.time_utils import to_utc_iso
 from api.repositories.resolve import resolve_item_id, resolve_symptom_id
 
 # normalized complete parse result to log for ingested input
@@ -258,22 +260,6 @@ def _coerce_api_range_to_today_if_time_only(
     return _coerce(time_range_start), _coerce(time_range_end)
 
 
-def _to_utc_iso(value: str | None) -> str | None:
-    if value is None:
-        return None
-    text = value.strip()
-    if not text:
-        return None
-    try:
-        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-    except ValueError:
-        return value
-    if parsed.tzinfo is None:
-        local_tz = datetime.now().astimezone().tzinfo
-        parsed = parsed.replace(tzinfo=local_tz)
-    return parsed.astimezone(timezone.utc).isoformat()
-
-
 def _override_with_daypart_fixed_time(
     text: str,
     timestamp: str | None,
@@ -397,9 +383,9 @@ def parse_with_api(text: str) -> ParsedEvent | None:
         time_range_start,
         time_range_end,
     )
-    timestamp = _to_utc_iso(timestamp)
-    time_range_start = _to_utc_iso(time_range_start)
-    time_range_end = _to_utc_iso(time_range_end)
+    timestamp = to_utc_iso(timestamp, strict=False)
+    time_range_start = to_utc_iso(time_range_start, strict=False)
+    time_range_end = to_utc_iso(time_range_end, strict=False)
     timestamp, time_range_start, time_range_end = _override_with_daypart_fixed_time(
         text,
         timestamp,
@@ -498,7 +484,7 @@ def parse_with_rules(text: str) -> ParsedEvent | None:
 def ingest_text_event(user_id: int, raw_text: str) -> dict:
     parsed = parse_text_event(raw_text)
     if parsed is None:
-        _store_raw(user_id, raw_text, "failed", "unparsed")
+        insert_raw_event_ingest(user_id, raw_text, "failed", "unparsed")
         return {"status": "queued", "resolution": "pending"}
 
     conn = get_connection()
@@ -554,16 +540,3 @@ def ingest_text_event(user_id: int, raw_text: str) -> dict:
     conn.commit()
     conn.close()
     return {"status": "ingested", "event_type": parsed.event_type}
-
-# api and regex parse failures do not crash ingestion, instead raw text is inserted into this db
-def _store_raw(user_id: int, raw_text: str, status: str, error: str | None):
-    conn = get_connection()
-    conn.execute(
-        """
-        INSERT INTO raw_event_ingest (user_id, raw_text, ingested_at, parse_status, error)
-        VALUES (?, ?, ?, ?, ?)
-        """,
-        (user_id, raw_text, datetime.now(tz=timezone.utc).isoformat(), status, error),
-    )
-    conn.commit()
-    conn.close()
