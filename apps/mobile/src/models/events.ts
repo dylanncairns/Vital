@@ -55,3 +55,26 @@ export type CreateEventResponse = {
   status?: string | null;
   resolution?: string | null;
 };
+
+export type InsightCitation = {
+  title?: string | null;
+  url?: string | null;
+  snippet?: string | null;
+  evidence_polarity_and_strength?: number | null;
+};
+
+export type Insight = {
+  id: number;
+  user_id: number;
+  item_id: number;
+  item_name: string;
+  symptom_id: number;
+  symptom_name: string;
+  model_probability?: number | null;
+  evidence_strength_score?: number | null;
+  evidence_summary?: string | null;
+  display_decision_reason?: string | null;
+  display_status?: "supported" | "insufficient_evidence" | "suppressed" | null;
+  created_at?: string | null;
+  citations: InsightCitation[];
+};

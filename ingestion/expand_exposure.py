@@ -28,7 +28,7 @@ def expand_exposure_event(exposure_event_id: int, conn=None) -> None:
     # else expand all ingredients of an item into entries of individual exposures
     conn.executemany(
         """
-        INSERT INTO exposure_expansions (exposure_event_id, ingredient_id)
+        INSERT OR IGNORE INTO exposure_expansions (exposure_event_id, ingredient_id)
         VALUES (?, ?)
         """,
         [(row["exposure_event_id"], row["ingredient_id"]) for row in rows],
@@ -37,3 +37,39 @@ def expand_exposure_event(exposure_event_id: int, conn=None) -> None:
         # commit only when this function owns the transaction
         conn.commit()
         conn.close()
+
+
+def backfill_missing_exposure_expansions(user_id: int | None = None, conn=None) -> int:
+    own_connection = conn is None
+    if conn is None:
+        conn = get_connection()
+    cursor = conn.cursor()
+    if user_id is None:
+        cursor.execute(
+            """
+            SELECT e.id AS exposure_event_id
+            FROM exposure_events e
+            LEFT JOIN exposure_expansions x ON x.exposure_event_id = e.id
+            WHERE x.id IS NULL
+            ORDER BY e.id ASC
+            """
+        )
+    else:
+        cursor.execute(
+            """
+            SELECT e.id AS exposure_event_id
+            FROM exposure_events e
+            LEFT JOIN exposure_expansions x ON x.exposure_event_id = e.id
+            WHERE e.user_id = ?
+              AND x.id IS NULL
+            ORDER BY e.id ASC
+            """,
+            (user_id,),
+        )
+    exposure_ids = [int(row["exposure_event_id"]) for row in cursor.fetchall()]
+    for exposure_id in exposure_ids:
+        expand_exposure_event(exposure_id, conn=conn)
+    if own_connection:
+        conn.commit()
+        conn.close()
+    return len(exposure_ids)

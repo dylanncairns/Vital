@@ -1,23 +1,27 @@
 Build Log:
 
-
+# Commit 1
 - Established framework for what system and repo will look like upon end of phase 1 (first completed and deployable version)
 
+# Commit 2
 - Archived test run model (prototype v1) in iOS/VitalPrototype
 - Built functional barebones python api and tested health
 
+# Commits 3-5
 - Built basic swift <-> python <-> sql prototype v2 and tested successful integration across frontend & backend
 
+# Commits 6-8
 - Updated sqlite table schemas from foundational products & ingredients & products_ingredients to items, ingredients, aliases, claims, evidence, users, symptoms, exposure_events, symptom_events
     - User table is referenced by exposure_events (also references items) and symptom_events (also references symptoms)
     - Items_ingredients references items and ingredients
     - Claims references ingredients and evidence 
-
 - Integrated updated schema.db with db.py using pathlib
 - Created api/__init__.py and api/repositories/__init__.py to initialize api repos as packages
 
+# Commits 9-10
 - Added initial data flow where /events endpoint accepts JSON input with event details, data is then validated and stored in SQLite symptom_event or exposure_event table, and then saved event info and id is returned
 
+# Commit 11
 - Created backend for events data display
     - Added get/events endpoint to create timeline that displays exposures and symptoms longitudinally
     - Inserted seed exposure and symptom event data for a single user to test /events flow for get and post
@@ -25,10 +29,12 @@ Build Log:
         - schema.sql serves as schema template
         - seed.sql used for testing
 
+# Commit 12
 - Established end-to-end loop for "Log Event" input form page (post/events endpoint) and a timeline display page (get/events endpoint)
     - archived swiftui clients
     - created apps folder for react native mobile and react web
 
+# Commit 13
 - updated schema.sql
     - evidence --> papers (for ingestion of published evidence linking a symptom and ingredient)
     - derived_features table for storing inputs to model that will compute confidence score for there being strong evidence supporting linkage between a symptom and ingredient based on a user's specific exposures and symptoms patterns
@@ -38,7 +44,6 @@ Build Log:
         - “Head ache”, “head-ache”, “Headache” all normalize to head ache
     - added raw_event_ingest staging table
     - central.db recreated and verified to match new schema
-
 - implemented ingestion pipeline
     - Rule‑based parsing with placeholder for external API call
     - writes structured events to db or stores raw text if parsing fails
@@ -53,9 +58,7 @@ Build Log:
         - items_ingredients and ingredients can be joined and rows are inserted into exposure_expansions, which allows candidate symptom/exposure pairs to reference ingredient ids and/or item ids
         - one feature action = exposure insert and expansion rows succeed or fail together to ensure full writes
     - incorporated openai API for text parsing first pass, if it fails then use the regex previously established in the bullets above
-
 - updated client.ts, events.ts, logeventscreen.tsx to implement the text blurb input which will later be transferred to voice-to-text
-
 - debugged and improved end-to-end flow
     - Mobile sends either structured event to POST /events or free text to POST /events/ingest_text
     - /events:
@@ -74,7 +77,6 @@ Build Log:
         - NormalizationError catches incompatibilities in event normalization
         - errors storing events into DB, parsing failure, ingestion failure all handled
     - insertions into tables are atomic operations (executes as a single complete step to prevent data corruption)
-
 - update UI for timeline to properly handle multiple dates
     - ingestion now handles user input as according to their local time, stores in backend with standardized UTC time, and displays on timeline with their local time
 - lots of ingestion pipeline debugging
@@ -84,6 +86,7 @@ Build Log:
         - fixed logging failure when timestamp given as "morning", "afternoon" etc
     - next version will remove most of the regex in ingestion pipeline and outsource parsing to LLM api calls with strict formatting rules, as regex cannot keep up with the variety in user input
 
+# Commit 14
 - upgraded from pure event logging to a foundation for insight generation
     - production skeleton for linkage insight generation built, UI unchanged
     - Updated route alias mapping with token normalization
@@ -110,12 +113,13 @@ Build Log:
     - most recent commit is fully backend logic and preparation for insight generation models as stated above, no frontend implementation yet
     - next versions will include RAG evidence retrival, then model scoring, then UI update to add insights to timeline 
 
+# Commit 15
 - cleaned up some duplicate engineering logic
     - removed old uncalled files (items.py and symptoms.py)
     - added raw_event_ingest and removed duplicate logic found in main and ingest_text
     - added time_utils and removed duplicate logic found in normalize_event and ingest_text
 
-
+# Commit 16
 - validated feature computation
     - added tests for feature math and time window logic
         - verified lag minimum and average, coocurrence handling, number of features generated, severity inference average, insight scores, retrival run endpoint
@@ -124,8 +128,42 @@ Build Log:
 - added new derived feature fields (cooccurrence_unique_symptom_count and pair_density) while keeping existing cooccurrence_count as raw pair count for backward compatibility
 - implemented dual and equal feature generation for items and ingredients with rollback from ingredient to item only where items_ingredients event expansion occurred
 - implemented migration that add missing columns for existing DBs with _column_exists checks
-
 - order of operations from current state
     - implement RAG evidence/citation retrival
     - implement XGBoost inference path and model correlation score + evidence strength score
     - update UI to properly display insight computation output
+
+# Commit 17
+- Implemented retrival of evidence and the claim it supports tied to each candidate pair, with citations returned in /insights
+    - Added rag.py pipeline to retrieve evidence with structured querie into OpenAI API using environment-configurable model (currently gpt-4.1) to retrieve relevant citations and return structured output when given a clear candidate linkage and instruction as part of the prompt
+        - claims DB currently stores local token embeddings (local-token-v1 JSON vector) and OpenAI vector store is used during retrival path
+        - vector_ingest.py pipeline contains vector storing/setup/upload/polling and auto discovery query generation, along with structured output parsing
+        - query retrieves top-k chunks per candidate from insights.py including ingredient/item name, symptom, temporal pattern, route, and lag bucket context
+        - Ingredient specific retrival preffered when expansions exist and item level retrival default for non expanable exposures
+    - Built citations_json from retrieved chunks and algo to derive evidence_score from retrieved claim/chunk signals
+        - Weighted average over all chunks for matched evidence polarity/strength and relevance used to compute score, with each chunk containing a title, url, snippet and strength plus a summary of the implications
+        - Retrival provenance stored in retrival_runs table and evidence outputs stored into insights
+    - Candidate generation is user-specific and temporal, while evidence data is shared and reusable so recompute is fast and deterministic while still producing candidate-specific citations and scores
+    - active online acquisition paths (/rag/sync and background evidence jobs) used so acquisition is incremental, not strictly one-time
+        - implemented retrieval-only recomputation for finding relevant evidence for an individual candidate linkage via background jobs when evidence is insufficient 
+        - background jobs added to allow for new evidence retrival upon entry of new symptoms or events
+            - /jobs/process processes recompute_candidate and evidence_acquire_candidate
+            - job_worker.py is continous and can serve as temp background worker but would eventually be moved to cloud so i dont have to run it in terminal to enable continuous evidence retrival
+    - added claims schema migration for item-level support
+        - claims.item_id added and migration/index updates (idx_claims_item_symptom_paper)
+    - /insights/recompute now locally recomputes from the persisted DB of evidence which is synced, while new evidence ingestion is handled by async background jobs
+- UI updates: insights tab added and is now user facing, which displays insights that pass gating
+    - gating now sets candidate linkage + evidence as an entity to supported, suppressed_no_citations, or suppressed_low_evidence_strength
+        - more accurate evidence score functionality and threshold will be added next
+        - display_status is returned per entity, only allowing supported entities to pass to UI
+- unit tests: added for background jobs, insights recomputation, background evidence retrival in jobs, evidence retrival in rag.py, vector ingestion (construction of queries for OpenAI API), and full insights integration
+    - Manual integration test to recompute insights as user inputs exposures and symptoms and ensure citations/evidence fields are populated properly
+        - ingest_text.py queues scoped recompute_candidate jobs after successful ingest
+            - exposure ingest -> queue jobs for existing user symptoms
+            - symptom ingest -> queue jobs for existing user exposures
+- full current end-to-end flow:
+    - Novel pair logged by user
+    - Worker tries retrieval from existing database of evidence/citations
+    - If evidence is insufficient then worker auto-runs acquisition for that exact pair with OpenAI API LLM query and ingests papers/claims
+    - Worker recomputes candidates
+    - Insight appears in UI if evidence passes thresholds

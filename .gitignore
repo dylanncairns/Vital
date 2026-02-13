@@ -16,3 +16,9 @@ build/
 # Archived SwiftUI prototype
 apps/archive
 
+# Ingested papers
+data/rag_sources
+
+# Database with user info
+data/central.db 
+data/seed.sql

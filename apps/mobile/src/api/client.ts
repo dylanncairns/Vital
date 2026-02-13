@@ -1,5 +1,6 @@
 import {
   TimelineEvent,
+  Insight,
   CreateEventRequest,
   CreateEventResponse,
   TextIngestRequest,
@@ -43,6 +44,17 @@ export async function ingestTextEvent(payload: TextIngestRequest): Promise<TextI
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`Failed to ingest text: ${res.status} ${text}`);
+  }
+  return res.json();
+}
+
+export async function fetchInsights(userId: number, includeSuppressed = false): Promise<Insight[]> {
+  const res = await fetch(
+    `${BASE_URL}/insights?user_id=${userId}&include_suppressed=${includeSuppressed ? "true" : "false"}`
+  );
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Failed to fetch insights: ${res.status} ${text}`);
   }
   return res.json();
 }

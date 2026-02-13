@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 from urllib import error, request
 
 from api.db import get_connection
+from api.repositories.jobs import JOB_RECOMPUTE_CANDIDATE, enqueue_background_job
 from api.repositories.raw_event_ingest import insert_raw_event_ingest
 from ingestion.expand_exposure import expand_exposure_event
 from ingestion.normalize_event import normalize_route
@@ -489,14 +490,18 @@ def ingest_text_event(user_id: int, raw_text: str) -> dict:
 
     conn = get_connection()
     now = datetime.now(tz=timezone.utc).isoformat()
+    jobs_queued = 0
+    queued_pairs: set[tuple[int, int]] = set()
     if parsed.event_type == "exposure":
         route = parsed.route or _infer_route(raw_text)
         route = normalize_route(route, strict=False)
         split_names = _split_exposure_items(raw_text) if route == "ingestion" else []
         item_ids = [resolve_item_id(name) for name in split_names] if len(split_names) > 1 else [parsed.item_id]
+        written_item_ids: set[int] = set()
         for item_id in item_ids:
             if item_id is None:
                 continue
+            written_item_ids.add(int(item_id))
             cursor = conn.execute(
                 """
                 INSERT INTO exposure_events (
@@ -517,6 +522,14 @@ def ingest_text_event(user_id: int, raw_text: str) -> dict:
                 ),
             )
             expand_exposure_event(cursor.lastrowid, conn=conn)
+        symptom_rows = conn.execute(
+            "SELECT DISTINCT symptom_id FROM symptom_events WHERE user_id = ?",
+            (user_id,),
+        ).fetchall()
+        symptom_ids = [int(row["symptom_id"]) for row in symptom_rows if row["symptom_id"] is not None]
+        for item_id in sorted(written_item_ids):
+            for symptom_id in symptom_ids:
+                queued_pairs.add((item_id, symptom_id))
     else:
         conn.execute(
             """
@@ -537,6 +550,26 @@ def ingest_text_event(user_id: int, raw_text: str) -> dict:
                 parsed.severity,
             ),
         )
+        if parsed.symptom_id is not None:
+            item_rows = conn.execute(
+                "SELECT DISTINCT item_id FROM exposure_events WHERE user_id = ?",
+                (user_id,),
+            ).fetchall()
+            symptom_id = int(parsed.symptom_id)
+            item_ids = [int(row["item_id"]) for row in item_rows if row["item_id"] is not None]
+            for item_id in item_ids:
+                queued_pairs.add((item_id, symptom_id))
     conn.commit()
     conn.close()
-    return {"status": "ingested", "event_type": parsed.event_type}
+    trigger = "ingest_text_exposure" if parsed.event_type == "exposure" else "ingest_text_symptom"
+    for item_id, symptom_id in sorted(queued_pairs):
+        job_id = enqueue_background_job(
+            user_id=user_id,
+            job_type=JOB_RECOMPUTE_CANDIDATE,
+            item_id=item_id,
+            symptom_id=symptom_id,
+            payload={"trigger": trigger},
+        )
+        if job_id is not None:
+            jobs_queued += 1
+    return {"status": "ingested", "event_type": parsed.event_type, "jobs_queued": jobs_queued}

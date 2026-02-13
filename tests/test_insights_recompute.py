@@ -6,6 +6,7 @@ from pathlib import Path
 
 import api.db
 from ml.insights import recompute_insights
+from ml.rag import ingest_paper_claim_chunks
 
 
 class InsightsRecomputeTests(unittest.TestCase):
@@ -122,9 +123,9 @@ class InsightsRecomputeTests(unittest.TestCase):
         # test created insights
         assert insight is not None
         self.assertAlmostEqual(insight["model_probability"], 0.0)
-        self.assertAlmostEqual(insight["evidence_strength_score"], 0.1)
-        self.assertAlmostEqual(insight["final_score"], 0.05)
-        self.assertEqual(insight["display_decision_reason"], "suppressed_pending_rag_and_model")
+        self.assertAlmostEqual(insight["evidence_strength_score"], 0.0)
+        self.assertAlmostEqual(insight["final_score"], 0.0)
+        self.assertEqual(insight["display_decision_reason"], "suppressed_no_citations")
 
         retrieval_count = self._fetchone(
             "SELECT COUNT(*) AS count FROM retrieval_runs WHERE user_id = 1 AND item_id = 1 AND symptom_id = 1"
@@ -230,6 +231,65 @@ class InsightsRecomputeTests(unittest.TestCase):
         )
         assert ingredient_feature_count is not None
         self.assertEqual(ingredient_feature_count["count"], 0)
+
+    def test_recompute_backfills_missing_expansions_for_evidence_retrieval(self) -> None:
+        self._exec(
+            "INSERT INTO users (id, created_at, name) VALUES (4, '2026-01-01T00:00:00Z', 'u4')"
+        )
+        self._exec("INSERT INTO items (id, name, category) VALUES (4, 'sugar drink', 'food')")
+        self._exec("INSERT INTO symptoms (id, name, description) VALUES (4, 'acne', 'd')")
+        self._exec("INSERT INTO ingredients (id, name, description) VALUES (4, 'refined sugar', 'd')")
+        self._exec("INSERT INTO items_ingredients (item_id, ingredient_id) VALUES (4, 4)")
+        self._exec(
+            """
+            INSERT INTO papers (id, title, url, abstract, publication_date, source, ingested_at)
+            VALUES (4, 'Sugar Acne Study', 'https://example.org/sugar-acne', 'high glycemic load', '2024-01-01', 'seed', '2026-01-01T00:00:00Z')
+            """
+        )
+        conn = api.db.get_connection()
+        try:
+            ingest_paper_claim_chunks(
+                conn,
+                paper_id=4,
+                item_id=None,
+                ingredient_id=4,
+                symptom_id=4,
+                summary="sugar linked to acne flares",
+                evidence_polarity_and_strength=1,
+                citation_title="Sugar Acne Study",
+                citation_url="https://example.org/sugar-acne",
+                source_text="Higher sugar intake linked to acne flare trends.",
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        # Deliberately do NOT insert exposure_expansions rows; recompute should backfill.
+        self._exec(
+            """
+            INSERT INTO exposure_events (id, user_id, item_id, timestamp, route)
+            VALUES (40, 4, 4, '2026-01-01T00:00:00Z', 'ingestion')
+            """
+        )
+        self._exec(
+            """
+            INSERT INTO symptom_events (id, user_id, symptom_id, timestamp, severity)
+            VALUES (40, 4, 4, '2026-01-01T08:00:00Z', 3)
+            """
+        )
+
+        recompute_insights(4)
+        insight = self._fetchone(
+            """
+            SELECT evidence_strength_score, display_decision_reason
+            FROM insights
+            WHERE user_id = 4 AND item_id = 4 AND symptom_id = 4
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        )
+        assert insight is not None
+        self.assertGreater(float(insight["evidence_strength_score"] or 0.0), 0.0)
+        self.assertEqual(insight["display_decision_reason"], "supported")
 
 
 if __name__ == "__main__":

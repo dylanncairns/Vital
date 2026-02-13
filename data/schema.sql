@@ -98,7 +98,8 @@ CREATE TABLE raw_event_ingest (
 );
 CREATE TABLE claims (
     id INTEGER NOT NULL PRIMARY KEY,
-    ingredient_id INTEGER NOT NULL,
+    item_id INTEGER,
+    ingredient_id INTEGER,
     symptom_id INTEGER NOT NULL,
     paper_id INTEGER NOT NULL,
     claim_type TEXT,
@@ -112,6 +113,7 @@ CREATE TABLE claims (
     citation_url TEXT,
     citation_snippet TEXT,
     evidence_polarity_and_strength INTEGER,
+    FOREIGN KEY (item_id) REFERENCES items(id),
     FOREIGN KEY (ingredient_id) REFERENCES ingredients(id),
     FOREIGN KEY (symptom_id) REFERENCES symptoms(id),
     FOREIGN KEY (paper_id) REFERENCES papers(id)
@@ -186,4 +188,5 @@ CREATE TABLE retrieval_runs (
     FOREIGN KEY (symptom_id) REFERENCES symptoms(id)
 );
 CREATE INDEX idx_claims_ingredient_symptom_paper ON claims(ingredient_id, symptom_id, paper_id);
+CREATE INDEX idx_claims_item_symptom_paper ON claims(item_id, symptom_id, paper_id);
 CREATE INDEX idx_retrieval_runs_user_item_symptom ON retrieval_runs(user_id, item_id, symptom_id);

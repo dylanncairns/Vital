@@ -6,6 +6,14 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from api.db import get_connection
+from ingestion.expand_exposure import backfill_missing_exposure_expansions
+from ml.rag import (
+    aggregate_evidence,
+    build_candidate_query,
+    fetch_item_name_map,
+    fetch_symptom_name_map,
+    retrieve_claim_evidence,
+)
 
 # generate insight candidates for many possible temporal patterns of exposure
 ROLLING_WINDOW = timedelta(days=7)
@@ -16,6 +24,7 @@ LAG_BUCKETS = (
     ("72h_7d", timedelta(hours=72), timedelta(days=7)),
 )
 MAX_LAG_WINDOW = LAG_BUCKETS[-1][2]
+MIN_EVIDENCE_STRENGTH = 0.2
 
 
 def _now_iso() -> str:
@@ -205,6 +214,8 @@ def _build_candidate_aggregates(
     list[SymptomEvent],
     dict[int, set[int]],
 ]:
+    # Ensure legacy rows or manually seeded exposures are expanded before candidate generation.
+    backfill_missing_exposure_expansions(user_id)
     exposures = _fetch_exposures(user_id)
     symptoms = _fetch_symptoms(user_id)
     exposure_ingredients = _fetch_exposure_ingredients(user_id)
@@ -278,7 +289,30 @@ def _build_candidate_aggregates(
     return aggregates, ingredient_aggregates, pair_count, exposures, symptoms, exposure_ingredients
 
 
-def recompute_insights(user_id: int) -> dict[str, int]:
+def list_rag_sync_candidates(user_id: int) -> list[dict[str, Any]]:
+    aggregates, _, _, _, _, exposure_ingredients = _build_candidate_aggregates(user_id)
+    candidates: list[dict[str, Any]] = []
+    for candidate in aggregates.values():
+        ingredient_ids: set[int] = set()
+        for exposure_event_id in candidate.exposure_event_ids:
+            ingredient_ids.update(exposure_ingredients.get(exposure_event_id, set()))
+        candidates.append(
+            {
+                "item_id": candidate.item_id,
+                "symptom_id": candidate.symptom_id,
+                "ingredient_ids": ingredient_ids,
+                "routes": sorted(candidate.routes),
+                "lag_bucket_counts": dict(candidate.lag_bucket_counts),
+            }
+        )
+    return candidates
+
+
+def recompute_insights(
+    user_id: int,
+    *,
+    target_pairs: set[tuple[int, int]] | None = None,
+) -> dict[str, int]:
     (
         aggregates,
         ingredient_aggregates,
@@ -291,11 +325,39 @@ def recompute_insights(user_id: int) -> dict[str, int]:
     conn = get_connection()
     now_iso = _now_iso()
     inserted = 0
+    candidates_considered = 0
+    pairs_evaluated = (
+        sum(len(candidate.lags_minutes) for key, candidate in aggregates.items() if key in target_pairs)
+        if target_pairs is not None
+        else pair_count
+    )
     try:
-        conn.execute("DELETE FROM insights WHERE user_id = ?", (user_id,))
-        conn.execute("DELETE FROM derived_features_ingredients WHERE user_id = ?", (user_id,))
+        item_name_map = fetch_item_name_map(conn)
+        symptom_name_map = fetch_symptom_name_map(conn)
+
+        if target_pairs is None:
+            conn.execute("DELETE FROM insights WHERE user_id = ?", (user_id,))
+            conn.execute("DELETE FROM derived_features_ingredients WHERE user_id = ?", (user_id,))
+        else:
+            for item_id, symptom_id in sorted(target_pairs):
+                conn.execute(
+                    "DELETE FROM insights WHERE user_id = ? AND item_id = ? AND symptom_id = ?",
+                    (user_id, item_id, symptom_id),
+                )
+                conn.execute(
+                    "DELETE FROM derived_features WHERE user_id = ? AND item_id = ? AND symptom_id = ?",
+                    (user_id, item_id, symptom_id),
+                )
+                conn.execute(
+                    "DELETE FROM retrieval_runs WHERE user_id = ? AND item_id = ? AND symptom_id = ?",
+                    (user_id, item_id, symptom_id),
+                )
 
         for candidate in aggregates.values():
+            pair_key = (candidate.item_id, candidate.symptom_id)
+            if target_pairs is not None and pair_key not in target_pairs:
+                continue
+            candidates_considered += 1
             if not candidate.lags_minutes:
                 continue
             lag_min = min(candidate.lags_minutes)
@@ -364,12 +426,31 @@ def recompute_insights(user_id: int) -> dict[str, int]:
                     now_iso,
                 ),
             )
-            # placeholder structure
-            evidence_strength = 0.0
+            ingredient_ids: set[int] = set()
+            for exposure_event_id in candidate.exposure_event_ids:
+                ingredient_ids.update(exposure_ingredients.get(exposure_event_id, set()))
+            query_text = build_candidate_query(
+                item_name=item_name_map.get(candidate.item_id),
+                symptom_name=symptom_name_map.get(candidate.symptom_id),
+                routes=candidate.routes,
+                lag_bucket_counts=candidate.lag_bucket_counts,
+            )
+            retrieved_claims = retrieve_claim_evidence(
+                conn,
+                ingredient_ids=ingredient_ids,
+                item_id=candidate.item_id,
+                symptom_id=candidate.symptom_id,
+                query_text=query_text,
+                top_k=5,
+            )
+            evidence = aggregate_evidence(retrieved_claims)
             model_probability = 0.0
-            if candidate.exposure_with_ingredients_count > 0:
-                # Temporary signal: ingredient expansion exists but no external evidence indexed yet.
-                evidence_strength = 0.1
+            if not evidence["citations"]:
+                decision_reason = "suppressed_no_citations"
+            elif float(evidence["evidence_strength_score"] or 0.0) < MIN_EVIDENCE_STRENGTH:
+                decision_reason = "suppressed_low_evidence_strength"
+            else:
+                decision_reason = "supported"
 
             conn.execute(
                 """
@@ -384,13 +465,13 @@ def recompute_insights(user_id: int) -> dict[str, int]:
                     candidate.item_id,
                     candidate.symptom_id,
                     model_probability,
-                    evidence_strength,
-                    (model_probability + evidence_strength) / 2.0,
-                    "No literature evidence is indexed yet; this candidate is from temporal co-occurrence only.",
-                    evidence_strength,
+                    evidence["evidence_score"],
+                    (model_probability + evidence["evidence_score"]) / 2.0,
+                    evidence["evidence_summary"],
+                    evidence["evidence_strength_score"],
                     model_probability,
-                    "suppressed_pending_rag_and_model",
-                    json.dumps([]),
+                    decision_reason,
+                    json.dumps(evidence["citations"]),
                     now_iso,
                 ),
             )
@@ -412,14 +493,16 @@ def recompute_insights(user_id: int) -> dict[str, int]:
                     candidate.item_id,
                     candidate.symptom_id,
                     query_key,
-                    0,
-                    0,
+                    5,
+                    len(retrieved_claims),
                     now_iso,
                 ),
             )
             inserted += 1
 
         for ingredient_candidate in ingredient_aggregates.values():
+            if target_pairs is not None:
+                continue
             if not ingredient_candidate.lags_minutes:
                 continue
             if ingredient_candidate.latest_symptom_ts is None:
@@ -497,8 +580,8 @@ def recompute_insights(user_id: int) -> dict[str, int]:
         conn.close()
 
     return {
-        "candidates_considered": len(aggregates),
-        "pairs_evaluated": pair_count,
+        "candidates_considered": candidates_considered if target_pairs is not None else len(aggregates),
+        "pairs_evaluated": pairs_evaluated,
         "insights_written": inserted,
     }
 
@@ -553,6 +636,11 @@ def list_insights(user_id: int, include_suppressed: bool = True) -> list[dict[st
                     "evidence_strength_score": row["evidence_strength_score"],
                     "evidence_summary": row["evidence_summary"],
                     "display_decision_reason": row["display_decision_reason"],
+                    "display_status": (
+                        "supported"
+                        if row["display_decision_reason"] == "supported"
+                        else ("insufficient_evidence" if row["display_decision_reason"] in {"suppressed_no_citations", "suppressed_low_evidence_strength"} else "suppressed")
+                    ),
                     "created_at": row["created_at"],
                     "citations": parsed_citations,
                 }

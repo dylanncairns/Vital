@@ -8,6 +8,7 @@ export default function TabLayout() {
     <Tabs screenOptions={{ headerShown: false }}>
       <Tabs.Screen name="index" options={{ href: null }} />
       <Tabs.Screen name="timeline" options={{ title: "Timeline" }} />
+      <Tabs.Screen name="insights" options={{ title: "Insights" }} />
       <Tabs.Screen name="logevent" options={{ title: "Log Event" }} />
     </Tabs>
   );

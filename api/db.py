@@ -125,13 +125,129 @@ def _migration_002_cooccurrence_semantics(conn: sqlite3.Connection) -> None:
     )
 
 
+def _claims_requires_item_support_rebuild(conn: sqlite3.Connection) -> bool:
+    if not _table_exists(conn, "claims"):
+        return False
+    rows = conn.execute("PRAGMA table_info(claims)").fetchall()
+    has_item_id = any(row["name"] == "item_id" for row in rows)
+    ingredient_notnull = False
+    for row in rows:
+        if row["name"] == "ingredient_id":
+            ingredient_notnull = bool(row["notnull"])
+            break
+    return (not has_item_id) or ingredient_notnull
+
+
+def _migration_003_claims_item_support(conn: sqlite3.Connection) -> None:
+    if not _claims_requires_item_support_rebuild(conn):
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_claims_item_symptom_paper
+            ON claims(item_id, symptom_id, paper_id)
+            """
+        )
+        return
+
+    conn.execute(
+        """
+        CREATE TABLE claims_new (
+            id INTEGER NOT NULL PRIMARY KEY,
+            item_id INTEGER,
+            ingredient_id INTEGER,
+            symptom_id INTEGER NOT NULL,
+            paper_id INTEGER NOT NULL,
+            claim_type TEXT,
+            summary TEXT,
+            chunk_index INTEGER,
+            chunk_text TEXT,
+            chunk_hash TEXT,
+            embedding_model TEXT,
+            embedding_vector TEXT,
+            citation_title TEXT,
+            citation_url TEXT,
+            citation_snippet TEXT,
+            evidence_polarity_and_strength INTEGER,
+            FOREIGN KEY (item_id) REFERENCES items(id),
+            FOREIGN KEY (ingredient_id) REFERENCES ingredients(id),
+            FOREIGN KEY (symptom_id) REFERENCES symptoms(id),
+            FOREIGN KEY (paper_id) REFERENCES papers(id)
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO claims_new (
+            id, ingredient_id, symptom_id, paper_id, claim_type, summary,
+            chunk_index, chunk_text, chunk_hash, embedding_model, embedding_vector,
+            citation_title, citation_url, citation_snippet, evidence_polarity_and_strength
+        )
+        SELECT
+            id, ingredient_id, symptom_id, paper_id, claim_type, summary,
+            chunk_index, chunk_text, chunk_hash, embedding_model, embedding_vector,
+            citation_title, citation_url, citation_snippet, evidence_polarity_and_strength
+        FROM claims
+        """
+    )
+    conn.execute("DROP TABLE claims")
+    conn.execute("ALTER TABLE claims_new RENAME TO claims")
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_claims_ingredient_symptom_paper
+        ON claims(ingredient_id, symptom_id, paper_id)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_claims_item_symptom_paper
+        ON claims(item_id, symptom_id, paper_id)
+        """
+    )
+
+
 def _apply_migrations(conn: sqlite3.Connection) -> None:
     migrations: list[Callable[[sqlite3.Connection], None]] = [
         _migration_001_insight_and_rag_scaffolding,
         _migration_002_cooccurrence_semantics,
+        _migration_003_claims_item_support,
+        _migration_004_background_jobs,
     ]
     for migration in migrations:
         migration(conn)
+
+
+def _migration_004_background_jobs(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS background_jobs (
+            id INTEGER NOT NULL PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            job_type TEXT NOT NULL,
+            item_id INTEGER,
+            symptom_id INTEGER,
+            payload_json TEXT,
+            status TEXT NOT NULL DEFAULT 'pending',
+            attempts INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT,
+            created_at TEXT,
+            updated_at TEXT,
+            FOREIGN KEY (user_id) REFERENCES users(id),
+            FOREIGN KEY (item_id) REFERENCES items(id),
+            FOREIGN KEY (symptom_id) REFERENCES symptoms(id)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_background_jobs_status_created
+        ON background_jobs(status, created_at)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_background_jobs_user_type
+        ON background_jobs(user_id, job_type)
+        """
+    )
 
 def initialize_database():
     db_exists = DB_PATH.exists()
