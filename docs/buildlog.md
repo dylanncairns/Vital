@@ -167,3 +167,44 @@ Build Log:
     - If evidence is insufficient then worker auto-runs acquisition for that exact pair with OpenAI API LLM query and ingests papers/claims
     - Worker recomputes candidates
     - Insight appears in UI if evidence passes thresholds
+
+# Commit 18
+- Developed model that uses gradient boosting to predict whether a candidate linkage is likely true for a user
+    - Input features include:
+        - user's personal timeline
+        - candidate context 
+        - rag evidence strength score
+        - body of evidence citation count, stance polarity, abstract interpretation
+    - Outputs probability from 0 to 1 for above context
+    - For each candidate an exact feature vector is built in identical order
+- Overall UI-displayed Confidence Score S = q(E) + P - p
+    - E is the OpenAI API evidence retrival generated score for how supportive evidence is of candidate linkage
+        - extracting evaluation from study design, stance, applicability, effect statements is a strong suit of LLM
+    - q measures the quality of the total body of evidence retrieved for a candidate linkage
+        - manually written deterministic algo more reliable, auditable, stable for health-regulatory-guideline association 
+    - P is the probability that XGBoost model computes for if the given candidate linkage is likely true for the specific user
+        - gradient boosting strong with tabular, sparse, noisy, temporal data with strong calibration and control
+    - p is any penalties that originate from quality of user input, meaning that the less information they give per timeline entry involved in the candidate linkage then the more penalized the confidence score will be
+        - manual algo to calculate based on explicit pitfalls of user interaction behavior
+- trimmed a lot of hardcoding with the help of a multitude of imported packages 
+- model training and eval + improved standing algorithms
+    - used deterministic, LLM generated training data for candidates with obvious determinism to train and test model
+        - only very obvious correlates backed by evidence and very obvious non correlates that can be 99% sure no linkage
+        - any ambiguous training data would not be appropriate for health oriented setting where precision and confidence in insights is of the upmost importance, as mislabeling/overconfidence cannot be tolerated
+    - ran training, verified artifacts exist, validated runtime health and migration safety
+    - verified OpenAI API responses include required support fields and worker repeatedly retries failed jobs while stale running jobs are requeued and long LLM calls are timed out + placed back into queue
+    - verified that get/insights always returns P, E, q, p and thresholds are loaded from XGBoost artifact
+        - ensures insight display gating is functional and accurate
+    - model retraining is triggered when enough new timeline data is added
+        - handled by existing background job worker
+        - trained on pooled global data but uses user's features for personalized inference
+        - curated_linkages.json is a handcrafted dataset of obvious positives/negatives
+        - training rows are also built from stored insights and derived features
+        - training_data.py builds many rows from real event windows per user
+            - Case rows are anchored to established symptom episodes, with y=1
+            - Control rows are anchored to time-aware windows that lack nearby symptom episodes, with y=0
+            - Features are computed identically for both so model can learn pattern differences in symptom onset vs baseline windows
+        - train_model.py combines these with --dataset-source hybrid
+    - curated dataset made to align with the purpose of the app, which is to surface insight into underlying reactions to logged exposures that might be causing QOL diminishing health symptoms which user may not previously have correlated
+- implemented a dedicated fusion score calculator in final_score.py, which trains a fusion logistic regression model over P, q (E alr factored in), p, P*q, q*(1-p), contradiction ratio, citation count
+- standing functionality: ingestion, candidate generation, RAG-backed evidence, persisted insights, background jobs, and calibrated scoring all integrated and working together

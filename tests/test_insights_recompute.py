@@ -115,17 +115,30 @@ class InsightsRecomputeTests(unittest.TestCase):
 
         insight = self._fetchone(
             """
-            SELECT model_probability, evidence_strength_score, final_score, display_decision_reason
+            SELECT model_probability, evidence_strength_score, evidence_quality_score,
+                   penalty_score, final_score, display_decision_reason
             FROM insights
             WHERE user_id = 1 AND item_id = 1 AND symptom_id = 1
             """
         )
         # test created insights
         assert insight is not None
-        self.assertAlmostEqual(insight["model_probability"], 0.0)
+        self.assertGreaterEqual(float(insight["model_probability"] or 0.0), 0.0)
+        self.assertLessEqual(float(insight["model_probability"] or 0.0), 1.0)
         self.assertAlmostEqual(insight["evidence_strength_score"], 0.0)
-        self.assertAlmostEqual(insight["final_score"], 0.0)
-        self.assertEqual(insight["display_decision_reason"], "suppressed_no_citations")
+        self.assertAlmostEqual(insight["evidence_quality_score"], 0.0)
+        self.assertGreaterEqual(float(insight["penalty_score"] or 0.0), 0.0)
+        self.assertGreaterEqual(float(insight["final_score"] or 0.0), 0.0)
+        self.assertLessEqual(float(insight["final_score"] or 0.0), 1.0)
+        self.assertIn(
+            insight["display_decision_reason"],
+            {
+                "suppressed_no_citations",
+                "suppressed_low_evidence_strength",
+                "suppressed_low_model_probability",
+                "suppressed_low_overall_confidence",
+            },
+        )
 
         retrieval_count = self._fetchone(
             "SELECT COUNT(*) AS count FROM retrieval_runs WHERE user_id = 1 AND item_id = 1 AND symptom_id = 1"

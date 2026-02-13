@@ -11,7 +11,11 @@ from datetime import datetime, timedelta, timezone
 from urllib import error, request
 
 from api.db import get_connection
-from api.repositories.jobs import JOB_RECOMPUTE_CANDIDATE, enqueue_background_job
+from api.repositories.jobs import (
+    JOB_RECOMPUTE_CANDIDATE,
+    enqueue_background_job,
+    maybe_enqueue_model_retrain,
+)
 from api.repositories.raw_event_ingest import insert_raw_event_ingest
 from ingestion.expand_exposure import expand_exposure_event
 from ingestion.normalize_event import normalize_route
@@ -572,4 +576,5 @@ def ingest_text_event(user_id: int, raw_text: str) -> dict:
         )
         if job_id is not None:
             jobs_queued += 1
+    maybe_enqueue_model_retrain(trigger_user_id=int(user_id))
     return {"status": "ingested", "event_type": parsed.event_type, "jobs_queued": jobs_queued}

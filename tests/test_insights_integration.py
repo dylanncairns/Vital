@@ -91,6 +91,10 @@ class InsightsIntegrationTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         row = rows[0]
         self.assertGreater(row["evidence_strength_score"], 0.0)
+        self.assertGreaterEqual(row["evidence_quality_score"], 0.0)
+        self.assertLessEqual(row["evidence_quality_score"], 1.0)
+        self.assertGreaterEqual(row["overall_confidence_score"], 0.0)
+        self.assertLessEqual(row["overall_confidence_score"], 1.0)
         self.assertIn("claim(s) retrieved", row["evidence_summary"])
         self.assertTrue(len(row["citations"]) >= 1)
         self.assertEqual(row["display_status"], "supported")

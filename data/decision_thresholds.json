@@ -1,0 +1,8 @@
+{
+  "created_at": "2026-02-13T08:54:13.150603+00:00",
+  "source": "hybrid",
+  "target_precision": 0.75,
+  "min_evidence_strength": 0.2,
+  "min_model_probability": 0.8,
+  "min_overall_confidence": 0.8
+}

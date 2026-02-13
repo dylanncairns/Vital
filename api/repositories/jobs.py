@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timezone
 from typing import Any
 
@@ -9,9 +10,11 @@ from api.db import get_connection
 
 JOB_RECOMPUTE_CANDIDATE = "recompute_candidate"
 JOB_EVIDENCE_ACQUIRE_CANDIDATE = "evidence_acquire_candidate"
+JOB_MODEL_RETRAIN = "model_retrain"
 DEFAULT_MAX_FAILED_ATTEMPTS = 5
 DEFAULT_FAILED_RETRY_BASE_SECONDS = 30
 DEFAULT_FAILED_RETRY_MAX_SECONDS = 600
+DEFAULT_RETRAIN_EVENT_DELTA = int(os.getenv("MODEL_RETRAIN_EVENT_DELTA", "25"))
 
 
 def _now_iso() -> str:
@@ -237,5 +240,100 @@ def count_jobs(*, user_id: int | None = None, status: str | None = None) -> int:
             params.append(status)
         row = conn.execute(sql, tuple(params)).fetchone()
         return int(row["c"]) if row is not None else 0
+    finally:
+        conn.close()
+
+
+def maybe_enqueue_model_retrain(
+    *,
+    trigger_user_id: int,
+    event_delta_threshold: int = DEFAULT_RETRAIN_EVENT_DELTA,
+) -> int | None:
+    conn = get_connection()
+    try:
+        existing = conn.execute(
+            """
+            SELECT id FROM background_jobs
+            WHERE job_type = ?
+              AND status IN ('pending', 'running')
+            LIMIT 1
+            """,
+            (JOB_MODEL_RETRAIN,),
+        ).fetchone()
+        if existing is not None:
+            return None
+
+        total_exposures = int(conn.execute("SELECT COUNT(*) AS c FROM exposure_events").fetchone()["c"])
+        total_symptoms = int(conn.execute("SELECT COUNT(*) AS c FROM symptom_events").fetchone()["c"])
+        total_events = total_exposures + total_symptoms
+
+        state = conn.execute(
+            """
+            SELECT last_trained_total_events, last_enqueued_total_events
+            FROM model_retrain_state
+            WHERE id = 1
+            """
+        ).fetchone()
+        last_trained = int(state["last_trained_total_events"]) if state is not None else 0
+        last_enqueued = int(state["last_enqueued_total_events"]) if state is not None else 0
+        baseline = max(last_trained, last_enqueued)
+        if total_events - baseline < max(1, int(event_delta_threshold)):
+            return None
+
+        now_iso = _now_iso()
+        payload = {
+            "trigger": "event_delta_threshold",
+            "total_events": total_events,
+            "last_trained_total_events": last_trained,
+            "event_delta_threshold": int(event_delta_threshold),
+        }
+        cursor = conn.execute(
+            """
+            INSERT INTO background_jobs (
+                user_id, job_type, item_id, symptom_id, payload_json,
+                status, attempts, created_at, updated_at
+            )
+            VALUES (?, ?, NULL, NULL, ?, 'pending', 0, ?, ?)
+            """,
+            (
+                int(trigger_user_id),
+                JOB_MODEL_RETRAIN,
+                json.dumps(payload, sort_keys=True),
+                now_iso,
+                now_iso,
+            ),
+        )
+        conn.execute(
+            """
+            UPDATE model_retrain_state
+            SET last_enqueued_total_events = ?, updated_at = ?
+            WHERE id = 1
+            """,
+            (total_events, now_iso),
+        )
+        conn.commit()
+        return int(cursor.lastrowid)
+    finally:
+        conn.close()
+
+
+def mark_model_retrain_completed(*, trained_total_events: int | None = None) -> None:
+    conn = get_connection()
+    try:
+        if trained_total_events is None:
+            total_exposures = int(conn.execute("SELECT COUNT(*) AS c FROM exposure_events").fetchone()["c"])
+            total_symptoms = int(conn.execute("SELECT COUNT(*) AS c FROM symptom_events").fetchone()["c"])
+            trained_total_events = total_exposures + total_symptoms
+        conn.execute(
+            """
+            UPDATE model_retrain_state
+            SET last_trained_total_events = ?,
+                last_enqueued_total_events = ?,
+                updated_at = ?
+            WHERE id = 1
+            """,
+            (int(trained_total_events), int(trained_total_events), _now_iso()),
+        )
+        conn.commit()
     finally:
         conn.close()

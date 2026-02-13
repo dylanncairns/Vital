@@ -7,6 +7,13 @@ from typing import Any
 
 from api.db import get_connection
 from ingestion.expand_exposure import backfill_missing_exposure_expansions
+from ml.evaluator import (
+    compute_evidence_quality,
+    compute_penalty_score,
+    get_decision_thresholds,
+    predict_model_probability,
+)
+from ml.final_score import predict_final_score
 from ml.rag import (
     aggregate_evidence,
     build_candidate_query,
@@ -24,7 +31,6 @@ LAG_BUCKETS = (
     ("72h_7d", timedelta(hours=72), timedelta(days=7)),
 )
 MAX_LAG_WINDOW = LAG_BUCKETS[-1][2]
-MIN_EVIDENCE_STRENGTH = 0.2
 
 
 def _now_iso() -> str:
@@ -52,6 +58,17 @@ def _coerce_int_or_none(value: Any) -> int | None:
     except (TypeError, ValueError):
         return None
 
+
+def _time_confidence_score(value: str | None) -> float:
+    normalized = (value or "").strip().lower()
+    if normalized == "exact":
+        return 1.0
+    if normalized == "approx":
+        return 0.7
+    if normalized == "backfilled":
+        return 0.4
+    return 0.55
+
 # each lag is assigned to first matching bucket, converting lag into retrivable categories
 def _lag_bucket_label(lag: timedelta) -> str | None:
     for label, start, end in LAG_BUCKETS:
@@ -67,6 +84,7 @@ class ExposureEvent:
     event_ts: datetime
     route: str | None
     has_expansion: bool
+    time_confidence_score: float
 
 @dataclass
 class SymptomEvent:
@@ -74,6 +92,7 @@ class SymptomEvent:
     symptom_id: int
     event_ts: datetime
     severity: int | None
+    time_confidence_score: float
 
 # define shape of candidate linkage
 @dataclass
@@ -88,6 +107,7 @@ class CandidateAggregate:
     routes: set[str] = field(default_factory=set)
     lag_bucket_counts: dict[str, int] = field(default_factory=dict)
     exposure_with_ingredients_count: int = 0
+    time_confidence_values: list[float] = field(default_factory=list)
     latest_symptom_ts: datetime | None = None
 
 
@@ -102,6 +122,7 @@ class IngredientAggregate:
     symptom_event_ids: set[int] = field(default_factory=set)
     routes: set[str] = field(default_factory=set)
     lag_bucket_counts: dict[str, int] = field(default_factory=dict)
+    time_confidence_values: list[float] = field(default_factory=list)
     latest_symptom_ts: datetime | None = None
 
 
@@ -140,6 +161,7 @@ def _fetch_exposures(user_id: int) -> list[ExposureEvent]:
                 e.item_id AS item_id,
                 COALESCE(e.timestamp, e.time_range_start) AS event_ts,
                 e.route AS route,
+                e.time_confidence AS time_confidence,
                 CASE WHEN COUNT(x.id) > 0 THEN 1 ELSE 0 END AS has_expansion
             FROM exposure_events e
             LEFT JOIN exposure_expansions x ON x.exposure_event_id = e.id
@@ -164,6 +186,7 @@ def _fetch_exposures(user_id: int) -> list[ExposureEvent]:
                 event_ts=parsed_ts,
                 route=_route_key(row["route"]),
                 has_expansion=bool(row["has_expansion"]),
+                time_confidence_score=_time_confidence_score(row["time_confidence"]),
             )
         )
     return out
@@ -177,7 +200,8 @@ def _fetch_symptoms(user_id: int) -> list[SymptomEvent]:
                 s.id AS event_id,
                 s.symptom_id AS symptom_id,
                 COALESCE(s.timestamp, s.time_range_start) AS event_ts,
-                s.severity AS severity
+                s.severity AS severity,
+                s.time_confidence AS time_confidence
             FROM symptom_events s
             WHERE s.user_id = ?
               AND COALESCE(s.timestamp, s.time_range_start) IS NOT NULL
@@ -198,6 +222,7 @@ def _fetch_symptoms(user_id: int) -> list[SymptomEvent]:
                 symptom_id=row["symptom_id"],
                 event_ts=parsed_ts,
                 severity=_coerce_int_or_none(row["severity"]),
+                time_confidence_score=_time_confidence_score(row["time_confidence"]),
             )
         )
     return out
@@ -256,6 +281,9 @@ def _build_candidate_aggregates(
                 candidate.exposure_with_ingredients_count += 1
             if symptom.severity is not None:
                 candidate.symptom_severity_values.append(symptom.severity)
+            candidate.time_confidence_values.append(
+                min(exposure.time_confidence_score, symptom.time_confidence_score)
+            )
             if candidate.latest_symptom_ts is None or symptom.event_ts > candidate.latest_symptom_ts:
                 candidate.latest_symptom_ts = symptom.event_ts
 
@@ -280,6 +308,9 @@ def _build_candidate_aggregates(
                 )
                 if symptom.severity is not None:
                     ingredient_candidate.symptom_severity_values.append(symptom.severity)
+                ingredient_candidate.time_confidence_values.append(
+                    min(exposure.time_confidence_score, symptom.time_confidence_score)
+                )
                 if (
                     ingredient_candidate.latest_symptom_ts is None
                     or symptom.event_ts > ingredient_candidate.latest_symptom_ts
@@ -324,6 +355,7 @@ def recompute_insights(
 
     conn = get_connection()
     now_iso = _now_iso()
+    thresholds = get_decision_thresholds()
     inserted = 0
     candidates_considered = 0
     pairs_evaluated = (
@@ -444,11 +476,74 @@ def recompute_insights(
                 top_k=5,
             )
             evidence = aggregate_evidence(retrieved_claims)
-            model_probability = 0.0
+            evidence_quality = compute_evidence_quality(evidence)
+
+            exposure_with_ingredients_ratio = (
+                candidate.exposure_with_ingredients_count / len(candidate.exposure_event_ids)
+                if candidate.exposure_event_ids
+                else 0.0
+            )
+            feature_map = {
+                "time_gap_min_minutes": lag_min,
+                "time_gap_avg_minutes": lag_avg,
+                "cooccurrence_count": float(cooccurrence_count),
+                "cooccurrence_unique_symptom_count": float(cooccurrence_unique_symptom_count),
+                "pair_density": float(pair_density or 0.0),
+                "exposure_count_7d": float(exposure_count_7d),
+                "symptom_count_7d": float(symptom_count_7d),
+                "severity_avg_after": float(severity_avg_after or 0.0),
+                "route_count": float(len(candidate.routes)),
+                "lag_bucket_diversity": float(len(candidate.lag_bucket_counts)),
+                "exposure_with_ingredients_ratio": float(exposure_with_ingredients_ratio),
+                "evidence_strength_score": float(evidence.get("evidence_strength_score") or 0.0),
+                "evidence_score_signed": float(evidence.get("evidence_score") or 0.0),
+                "citation_count": float(evidence_quality["citation_count"]),
+                "support_ratio": float(evidence_quality["support_ratio"]),
+                "contradict_ratio": float(evidence_quality["contradict_ratio"]),
+                "neutral_ratio": float(evidence_quality["neutral_ratio"]),
+                "avg_relevance": float(evidence_quality["avg_relevance"]),
+                "study_quality_score": float(evidence_quality["study_quality_score"]),
+                "population_match": float(evidence_quality["population_match"]),
+                "temporality_match": float(evidence_quality["temporality_match"]),
+                "risk_of_bias": float(evidence_quality["risk_of_bias"]),
+                "llm_confidence": float(evidence_quality["llm_confidence"]),
+                "time_confidence_score": (
+                    sum(candidate.time_confidence_values) / len(candidate.time_confidence_values)
+                    if candidate.time_confidence_values
+                    else 0.0
+                ),
+            }
+
+            model_probability = predict_model_probability(feature_map)
+            penalty_score = compute_penalty_score(feature_map)
+            final_confidence = predict_final_score(
+                model_probability=model_probability,
+                evidence_quality=float(evidence_quality["score"]),
+                penalty_score=penalty_score,
+                citation_count=float(evidence_quality["citation_count"]),
+                contradict_ratio=float(evidence_quality["contradict_ratio"]),
+            )
+
+            dominant_lag_bucket = None
+            if candidate.lag_bucket_counts:
+                dominant_lag_bucket = max(
+                    candidate.lag_bucket_counts.items(),
+                    key=lambda row: row[1],
+                )[0]
+            evidence_summary = str(evidence["evidence_summary"])
+            if dominant_lag_bucket:
+                evidence_summary = f"{evidence_summary} Dominant lag window: {dominant_lag_bucket}."
+
             if not evidence["citations"]:
                 decision_reason = "suppressed_no_citations"
-            elif float(evidence["evidence_strength_score"] or 0.0) < MIN_EVIDENCE_STRENGTH:
+            elif float(evidence["evidence_strength_score"] or 0.0) < float(
+                thresholds["min_evidence_strength"]
+            ):
                 decision_reason = "suppressed_low_evidence_strength"
+            elif float(model_probability) < float(thresholds["min_model_probability"]):
+                decision_reason = "suppressed_low_model_probability"
+            elif float(final_confidence) < float(thresholds["min_overall_confidence"]):
+                decision_reason = "suppressed_low_overall_confidence"
             else:
                 decision_reason = "supported"
 
@@ -456,9 +551,10 @@ def recompute_insights(
                 """
                 INSERT INTO insights (
                     user_id, item_id, symptom_id, model_score, evidence_score, final_score,
-                    evidence_summary, evidence_strength_score, model_probability, display_decision_reason, citations_json, created_at
+                    evidence_summary, evidence_strength_score, evidence_quality_score,
+                    model_probability, penalty_score, display_decision_reason, citations_json, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     candidate.user_id,
@@ -466,10 +562,12 @@ def recompute_insights(
                     candidate.symptom_id,
                     model_probability,
                     evidence["evidence_score"],
-                    (model_probability + evidence["evidence_score"]) / 2.0,
-                    evidence["evidence_summary"],
+                    final_confidence,
+                    evidence_summary,
                     evidence["evidence_strength_score"],
+                    evidence_quality["score"],
                     model_probability,
+                    penalty_score,
                     decision_reason,
                     json.dumps(evidence["citations"]),
                     now_iso,
@@ -599,6 +697,9 @@ def list_insights(user_id: int, include_suppressed: bool = True) -> list[dict[st
                 s.name AS symptom_name,
                 i.model_probability AS model_probability,
                 i.evidence_strength_score AS evidence_strength_score,
+                i.evidence_quality_score AS evidence_quality_score,
+                i.penalty_score AS penalty_score,
+                i.final_score AS overall_confidence_score,
                 i.evidence_summary AS evidence_summary,
                 i.display_decision_reason AS display_decision_reason,
                 i.citations_json AS citations_json,
@@ -634,12 +735,24 @@ def list_insights(user_id: int, include_suppressed: bool = True) -> list[dict[st
                     "symptom_name": row["symptom_name"],
                     "model_probability": row["model_probability"],
                     "evidence_strength_score": row["evidence_strength_score"],
+                    "evidence_quality_score": row["evidence_quality_score"],
+                    "penalty_score": row["penalty_score"],
+                    "overall_confidence_score": row["overall_confidence_score"],
                     "evidence_summary": row["evidence_summary"],
                     "display_decision_reason": row["display_decision_reason"],
                     "display_status": (
                         "supported"
                         if row["display_decision_reason"] == "supported"
-                        else ("insufficient_evidence" if row["display_decision_reason"] in {"suppressed_no_citations", "suppressed_low_evidence_strength"} else "suppressed")
+                        else (
+                            "insufficient_evidence"
+                            if row["display_decision_reason"] in {
+                                "suppressed_no_citations",
+                                "suppressed_low_evidence_strength",
+                                "suppressed_low_overall_confidence",
+                                "suppressed_low_model_probability",
+                            }
+                            else "suppressed"
+                        )
                     ),
                     "created_at": row["created_at"],
                     "citations": parsed_citations,

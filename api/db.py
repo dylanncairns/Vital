@@ -34,7 +34,9 @@ def _migration_001_insight_and_rag_scaffolding(conn: sqlite3.Connection) -> None
     insight_columns = [
         ("evidence_summary", "TEXT"),
         ("evidence_strength_score", "REAL"),
+        ("evidence_quality_score", "REAL"),
         ("model_probability", "REAL"),
+        ("penalty_score", "REAL"),
         ("display_decision_reason", "TEXT"),
         ("citations_json", "TEXT"),
     ]
@@ -53,6 +55,12 @@ def _migration_001_insight_and_rag_scaffolding(conn: sqlite3.Connection) -> None
         ("citation_title", "TEXT"),
         ("citation_url", "TEXT"),
         ("citation_snippet", "TEXT"),
+        ("study_design", "TEXT"),
+        ("study_quality_score", "REAL"),
+        ("population_match", "REAL"),
+        ("temporality_match", "REAL"),
+        ("risk_of_bias", "REAL"),
+        ("llm_confidence", "REAL"),
     ]
     for column_name, column_type in claim_columns:
         if not _column_exists(conn, "claims", column_name):
@@ -210,6 +218,7 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
         _migration_002_cooccurrence_semantics,
         _migration_003_claims_item_support,
         _migration_004_background_jobs,
+        _migration_005_model_retrain_state,
     ]
     for migration in migrations:
         migration(conn)
@@ -248,6 +257,27 @@ def _migration_004_background_jobs(conn: sqlite3.Connection) -> None:
         ON background_jobs(user_id, job_type)
         """
     )
+
+
+def _migration_005_model_retrain_state(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS model_retrain_state (
+            id INTEGER NOT NULL PRIMARY KEY CHECK (id = 1),
+            last_trained_total_events INTEGER NOT NULL DEFAULT 0,
+            last_enqueued_total_events INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT
+        )
+        """
+    )
+    if conn.execute("SELECT 1 FROM model_retrain_state WHERE id = 1").fetchone() is None:
+        conn.execute(
+            """
+            INSERT INTO model_retrain_state (
+                id, last_trained_total_events, last_enqueued_total_events, updated_at
+            ) VALUES (1, 0, 0, datetime('now'))
+            """
+        )
 
 def initialize_database():
     db_exists = DB_PATH.exists()

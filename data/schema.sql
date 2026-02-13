@@ -112,6 +112,12 @@ CREATE TABLE claims (
     citation_title TEXT,
     citation_url TEXT,
     citation_snippet TEXT,
+    study_design TEXT,
+    study_quality_score REAL,
+    population_match REAL,
+    temporality_match REAL,
+    risk_of_bias REAL,
+    llm_confidence REAL,
     evidence_polarity_and_strength INTEGER,
     FOREIGN KEY (item_id) REFERENCES items(id),
     FOREIGN KEY (ingredient_id) REFERENCES ingredients(id),
@@ -166,7 +172,9 @@ CREATE TABLE insights (
     final_score REAL,
     evidence_summary TEXT,
     evidence_strength_score REAL,
+    evidence_quality_score REAL,
     model_probability REAL,
+    penalty_score REAL,
     display_decision_reason TEXT,
     citations_json TEXT,
     created_at TEXT,
@@ -187,6 +195,14 @@ CREATE TABLE retrieval_runs (
     FOREIGN KEY (item_id) REFERENCES items(id),
     FOREIGN KEY (symptom_id) REFERENCES symptoms(id)
 );
+CREATE TABLE model_retrain_state (
+    id INTEGER NOT NULL PRIMARY KEY CHECK (id = 1),
+    last_trained_total_events INTEGER NOT NULL DEFAULT 0,
+    last_enqueued_total_events INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT
+);
 CREATE INDEX idx_claims_ingredient_symptom_paper ON claims(ingredient_id, symptom_id, paper_id);
 CREATE INDEX idx_claims_item_symptom_paper ON claims(item_id, symptom_id, paper_id);
 CREATE INDEX idx_retrieval_runs_user_item_symptom ON retrieval_runs(user_id, item_id, symptom_id);
+INSERT OR IGNORE INTO model_retrain_state (id, last_trained_total_events, last_enqueued_total_events, updated_at)
+VALUES (1, 0, 0, datetime('now'));

@@ -72,6 +72,9 @@ export type Insight = {
   symptom_name: string;
   model_probability?: number | null;
   evidence_strength_score?: number | null;
+  evidence_quality_score?: number | null;
+  penalty_score?: number | null;
+  overall_confidence_score?: number | null;
   evidence_summary?: string | null;
   display_decision_reason?: string | null;
   display_status?: "supported" | "insufficient_evidence" | "suppressed" | null;

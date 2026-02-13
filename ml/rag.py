@@ -1,16 +1,22 @@
 from __future__ import annotations
 
 import json
-import math
 import os
 import re
-from collections import Counter
 from datetime import datetime, timezone
 from hashlib import sha256
 from typing import Any
 
-_TOKEN_RE = re.compile(r"[a-z0-9]+")
+from sklearn.feature_extraction.text import HashingVectorizer
+from sklearn.metrics.pairwise import cosine_similarity as sklearn_cosine_similarity
+
 _NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
+_RELEVANCE_VECTORIZER = HashingVectorizer(
+    n_features=4096,
+    alternate_sign=False,
+    norm="l2",
+    ngram_range=(1, 2),
+)
 
 RAG_SCHEMA = {
     "name": "rag_cited_answer",
@@ -53,8 +59,38 @@ RAG_SCHEMA = {
                                     "citation_id": {"type": "string"},
                                     "snippet": {"type": "string"},
                                     "chunk_id": {"type": "string"},
+                                    "study_design": {
+                                        "type": "string",
+                                        "enum": [
+                                            "rct",
+                                            "cohort",
+                                            "case_control",
+                                            "cross_sectional",
+                                            "systematic_review",
+                                            "meta_analysis",
+                                            "case_report",
+                                            "animal",
+                                            "in_vitro",
+                                            "other",
+                                        ],
+                                    },
+                                    "study_quality_score": {"type": "number", "minimum": 0, "maximum": 1},
+                                    "population_match": {"type": "number", "minimum": 0, "maximum": 1},
+                                    "temporality_match": {"type": "number", "minimum": 0, "maximum": 1},
+                                    "risk_of_bias": {"type": "number", "minimum": 0, "maximum": 1},
+                                    "llm_confidence": {"type": "number", "minimum": 0, "maximum": 1},
                                 },
-                                "required": ["citation_id", "snippet", "chunk_id"],
+                                "required": [
+                                    "citation_id",
+                                    "snippet",
+                                    "chunk_id",
+                                    "study_design",
+                                    "study_quality_score",
+                                    "population_match",
+                                    "temporality_match",
+                                    "risk_of_bias",
+                                    "llm_confidence",
+                                ],
                             },
                         },
                     },
@@ -80,10 +116,6 @@ def fetch_symptom_name_map(conn) -> dict[int, str]:
 def fetch_ingredient_name_map(conn) -> dict[int, str]:
     rows = conn.execute("SELECT id, name FROM ingredients").fetchall()
     return {int(row["id"]): row["name"] for row in rows if row["name"] is not None}
-
-
-def tokenize(text: str) -> list[str]:
-    return _TOKEN_RE.findall((text or "").lower())
 
 
 def _normalize_phrase(text: str) -> str:
@@ -116,23 +148,17 @@ def text_hash(text: str) -> str:
     return sha256(text.encode("utf-8")).hexdigest()
 
 
-def embed_text(text: str) -> dict[str, float]:
-    tokens = tokenize(text)
-    if not tokens:
-        return {}
-    counts = Counter(tokens)
-    norm = math.sqrt(sum(value * value for value in counts.values()))
-    if norm == 0:
-        return {}
-    return {token: value / norm for token, value in counts.items()}
-
-
-def cosine_similarity(vec_a: dict[str, float], vec_b: dict[str, float]) -> float:
-    if not vec_a or not vec_b:
-        return 0.0
-    if len(vec_a) > len(vec_b):
-        vec_a, vec_b = vec_b, vec_a
-    return sum(value * vec_b.get(token, 0.0) for token, value in vec_a.items())
+def _relevance_scores(query_text: str, claim_texts: list[str]) -> list[float]:
+    if not claim_texts:
+        return []
+    matrix = _RELEVANCE_VECTORIZER.transform([query_text, *claim_texts])
+    query_vec = matrix[0:1]
+    claim_vecs = matrix[1:]
+    sims = sklearn_cosine_similarity(query_vec, claim_vecs)
+    if sims.size == 0:
+        return [0.0 for _ in claim_texts]
+    scores = sims[0].tolist()
+    return [float(max(0.0, min(1.0, value))) for value in scores]
 
 
 def build_candidate_query(
@@ -291,6 +317,12 @@ def retrieve_claim_evidence(
             c.citation_snippet AS citation_snippet,
             c.citation_title AS citation_title,
             c.citation_url AS citation_url,
+            c.study_design AS study_design,
+            c.study_quality_score AS study_quality_score,
+            c.population_match AS population_match,
+            c.temporality_match AS temporality_match,
+            c.risk_of_bias AS risk_of_bias,
+            c.llm_confidence AS llm_confidence,
             c.evidence_polarity_and_strength AS evidence_polarity_and_strength,
             p.title AS title,
             p.abstract AS abstract,
@@ -303,12 +335,11 @@ def retrieve_claim_evidence(
         tuple(params),
     ).fetchall()
 
-    query_embedding = embed_text(query_text)
+    row_dicts = [dict(raw) for raw in rows]
+    claim_texts = [_claim_text(row) for row in row_dicts]
+    scores = _relevance_scores(query_text, claim_texts)
     scored: list[dict[str, Any]] = []
-    for raw in rows:
-        row = dict(raw)
-        claim_embedding = embed_text(_claim_text(row))
-        relevance = cosine_similarity(query_embedding, claim_embedding)
+    for row, relevance in zip(row_dicts, scores):
         row["relevance"] = relevance
         scored.append(row)
 
@@ -333,24 +364,31 @@ def ingest_paper_claim_chunks(
     symptom_id: int,
     summary: str,
     evidence_polarity_and_strength: int,
-    citation_title: str | None,
-    citation_url: str | None,
-    source_text: str,
+    study_design: str | None = None,
+    study_quality_score: float | None = None,
+    population_match: float | None = None,
+    temporality_match: float | None = None,
+    risk_of_bias: float | None = None,
+    llm_confidence: float | None = None,
+    citation_title: str | None = None,
+    citation_url: str | None = None,
+    source_text: str = "",
 ) -> int:
     chunks = chunk_text(source_text)
     inserted = 0
     if not chunks:
         chunks = [summary]
     for index, chunk in enumerate(chunks):
-        embedding = embed_text(chunk)
         conn.execute(
             """
             INSERT INTO claims (
                 item_id, ingredient_id, symptom_id, paper_id, claim_type, summary,
                 chunk_index, chunk_text, chunk_hash, embedding_model, embedding_vector,
-                citation_title, citation_url, citation_snippet, evidence_polarity_and_strength
+                citation_title, citation_url, citation_snippet,
+                study_design, study_quality_score, population_match, temporality_match, risk_of_bias, llm_confidence,
+                evidence_polarity_and_strength
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 item_id,
@@ -362,20 +400,22 @@ def ingest_paper_claim_chunks(
                 index,
                 chunk,
                 text_hash(chunk),
-                "local-token-v1",
-                json_dumps_safe(embedding),
+                "hashing_vectorizer_v1",
+                None,
                 citation_title,
                 citation_url,
                 (chunk[:280] + "...") if len(chunk) > 280 else chunk,
+                study_design,
+                study_quality_score,
+                population_match,
+                temporality_match,
+                risk_of_bias,
+                llm_confidence,
                 evidence_polarity_and_strength,
             ),
         )
         inserted += 1
     return inserted
-
-
-def json_dumps_safe(value: Any) -> str:
-    return json.dumps(value, sort_keys=True)
 
 
 def _infer_polarity_strength(text: str) -> int:
@@ -467,6 +507,18 @@ def _extract_grounded_ids(payload: dict[str, Any]) -> tuple[set[str], set[str]]:
     return file_ids, chunk_ids
 
 
+def _bounded_metric(value: Any, *, default: float = 0.5) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        parsed = default
+    if parsed < 0.0:
+        return 0.0
+    if parsed > 1.0:
+        return 1.0
+    return parsed
+
+
 def _llm_retrieve_evidence_rows(
     *,
     symptom_name: str,
@@ -496,7 +548,9 @@ def _llm_retrieve_evidence_rows(
         "Return JSON that exactly matches the schema. No extra keys, no missing keys. "
         "If evidence is insufficient, return empty citations/evidence arrays and explain limits in answer. "
         "DO NOT invent citation_ids, file_ids, chunk_ids, DOI, URLs, titles, or years. "
-        "Each evidence.supports entry must reference a citation_id present in citations."
+        "Each evidence.supports entry must reference a citation_id present in citations. "
+        "For each support, assign study_design and numeric metrics from the retrieved text only: "
+        "study_quality_score, population_match, temporality_match, risk_of_bias, llm_confidence in [0,1]."
     )
     question_payload = {
         "symptom_name": symptom_name,
@@ -508,6 +562,7 @@ def _llm_retrieve_evidence_rows(
             "Retrieve evidence linking exposure to symptom.",
             "Return JSON matching schema exactly.",
             "Citations/supports must map to retrieved results.",
+            "Populate support-level study quality and match metrics strictly in [0,1].",
         ],
     }
 
@@ -614,12 +669,20 @@ def _llm_retrieve_evidence_rows(
             citation_id = support.get("citation_id")
             snippet = support.get("snippet")
             chunk_id = support.get("chunk_id")
+            study_design = support.get("study_design")
+            study_quality_score = _bounded_metric(support.get("study_quality_score"))
+            population_match = _bounded_metric(support.get("population_match"))
+            temporality_match = _bounded_metric(support.get("temporality_match"))
+            risk_of_bias = _bounded_metric(support.get("risk_of_bias"))
+            llm_confidence = _bounded_metric(support.get("llm_confidence"))
             if not isinstance(citation_id, str) or citation_id.strip() not in citation_map:
                 continue
             if not isinstance(snippet, str) or not snippet.strip():
                 continue
             if not isinstance(chunk_id, str) or not chunk_id.strip():
                 continue
+            if not isinstance(study_design, str) or not study_design.strip():
+                study_design = "other"
             if retrieved_chunk_ids and chunk_id not in retrieved_chunk_ids:
                 skipped_by_chunk_filter += 1
                 # Fallback: keep row if snippet exists and citation is otherwise grounded.
@@ -642,6 +705,12 @@ def _llm_retrieve_evidence_rows(
                     "summary": claim.strip(),
                     "snippet": snippet.strip(),
                     "evidence_polarity_and_strength": polarity,
+                    "study_design": study_design.strip().lower(),
+                    "study_quality_score": study_quality_score,
+                    "population_match": population_match,
+                    "temporality_match": temporality_match,
+                    "risk_of_bias": risk_of_bias,
+                    "llm_confidence": llm_confidence,
                 }
             )
             if len(output) >= max_evidence_rows:
@@ -685,6 +754,12 @@ def _llm_retrieve_evidence_rows(
                         "summary": claim.strip(),
                         "snippet": snippet.strip(),
                         "evidence_polarity_and_strength": polarity,
+                        "study_design": "other",
+                        "study_quality_score": 0.5,
+                        "population_match": 0.5,
+                        "temporality_match": 0.5,
+                        "risk_of_bias": 0.5,
+                        "llm_confidence": 0.5,
                     }
                 )
                 if len(output) >= max_evidence_rows:
@@ -890,6 +965,12 @@ def sync_claims_for_candidates(
                     symptom_id=row_symptom_id,
                     summary=row["summary"],
                     evidence_polarity_and_strength=row["evidence_polarity_and_strength"],
+                    study_design=row.get("study_design"),
+                    study_quality_score=row.get("study_quality_score"),
+                    population_match=row.get("population_match"),
+                    temporality_match=row.get("temporality_match"),
+                    risk_of_bias=row.get("risk_of_bias"),
+                    llm_confidence=row.get("llm_confidence"),
                     citation_title=row["title"],
                     citation_url=row["url"],
                     source_text=snippet,
@@ -928,17 +1009,34 @@ def aggregate_evidence(retrieved_claims: list[dict[str, Any]]) -> dict[str, Any]
         return {
             "evidence_score": 0.0,
             "evidence_strength_score": 0.0,
+            "avg_relevance": 0.0,
             "evidence_summary": "No matching evidence found for this symptom and exposure pattern.",
             "citations": [],
         }
 
     weighted_sum = 0.0
     total_weight = 0.0
+    relevance_sum = 0.0
     citations: list[dict[str, Any]] = []
 
     for claim in retrieved_claims:
         polarity = float(claim.get("evidence_polarity_and_strength") or 0.0)
-        weight = max(0.05, float(claim.get("relevance") or 0.0))
+        relevance = max(0.05, float(claim.get("relevance") or 0.0))
+        study_quality = _bounded_metric(claim.get("study_quality_score"))
+        population_match = _bounded_metric(claim.get("population_match"))
+        temporality_match = _bounded_metric(claim.get("temporality_match"))
+        risk_of_bias = _bounded_metric(claim.get("risk_of_bias"))
+        llm_confidence = _bounded_metric(claim.get("llm_confidence"))
+        quality_weight = (
+            0.35 * relevance
+            + 0.20 * study_quality
+            + 0.15 * population_match
+            + 0.15 * temporality_match
+            + 0.10 * (1.0 - risk_of_bias)
+            + 0.05 * llm_confidence
+        )
+        weight = max(0.05, min(1.0, quality_weight))
+        relevance_sum += weight
         weighted_sum += polarity * weight
         total_weight += weight
 
@@ -955,12 +1053,28 @@ def aggregate_evidence(retrieved_claims: list[dict[str, Any]]) -> dict[str, Any]
                 "url": claim.get("citation_url"),
                 "snippet": snippet_text,
                 "evidence_polarity_and_strength": int(claim.get("evidence_polarity_and_strength") or 0),
+                "study_design": claim.get("study_design"),
+                "study_quality_score": study_quality,
+                "population_match": population_match,
+                "temporality_match": temporality_match,
+                "risk_of_bias": risk_of_bias,
+                "llm_confidence": llm_confidence,
             }
         )
 
     evidence_score = (weighted_sum / total_weight) if total_weight > 0 else 0.0
     evidence_score = max(-1.0, min(1.0, evidence_score))
-    evidence_strength_score = abs(evidence_score)
+    avg_relevance = (relevance_sum / len(retrieved_claims)) if retrieved_claims else 0.0
+    avg_relevance = max(0.0, min(1.0, avg_relevance))
+    # Strength should not max out from a single claim.
+    # One strong claim can still be meaningful, but multi-claim support increases confidence.
+    claim_count = len(retrieved_claims)
+    coverage_factor = min(1.0, 0.35 + (0.16 * max(0, claim_count - 1)))
+    # Blend coverage and grounding quality so single strong claims are possible
+    # but weak/low-coverage evidence does not saturate.
+    quality_factor = avg_relevance
+    strength_factor = (0.6 * quality_factor) + (0.4 * coverage_factor)
+    evidence_strength_score = max(0.0, min(1.0, abs(evidence_score) * strength_factor))
     direction = "mixed"
     if evidence_score > 0.15:
         direction = "supportive"
@@ -970,6 +1084,7 @@ def aggregate_evidence(retrieved_claims: list[dict[str, Any]]) -> dict[str, Any]
     return {
         "evidence_score": evidence_score,
         "evidence_strength_score": evidence_strength_score,
+        "avg_relevance": avg_relevance,
         "evidence_summary": (
             f"{len(retrieved_claims)} claim(s) retrieved; overall evidence is {direction}."
         ),

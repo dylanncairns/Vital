@@ -62,6 +62,9 @@ export default function InsightsScreen() {
               </Text>
               <Text style={styles.summary}>{item.evidence_summary ?? "No summary"}</Text>
               <Text style={styles.meta}>
+                Confidence: {typeof item.overall_confidence_score === "number" ? item.overall_confidence_score.toFixed(2) : "-"}
+              </Text>
+              <Text style={styles.meta}>
                 Evidence strength: {typeof item.evidence_strength_score === "number" ? item.evidence_strength_score.toFixed(2) : "-"}
               </Text>
               <Text style={styles.meta}>Reason: {item.display_decision_reason ?? "-"}</Text>

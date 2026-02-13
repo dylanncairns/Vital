@@ -9,11 +9,14 @@ from api.db import get_connection, initialize_database
 from api.repositories.events import list_events
 from api.repositories.jobs import (
     JOB_EVIDENCE_ACQUIRE_CANDIDATE,
+    JOB_MODEL_RETRAIN,
     JOB_RECOMPUTE_CANDIDATE,
     enqueue_background_job,
     list_pending_jobs,
+    mark_model_retrain_completed,
     mark_job_done,
     mark_job_failed,
+    maybe_enqueue_model_retrain,
 )
 from api.repositories.raw_event_ingest import insert_raw_event_ingest
 from ingestion.expand_exposure import expand_exposure_event
@@ -27,6 +30,7 @@ from ml.rag import (
     sync_claims_for_candidates,
 )
 from ml.vector_ingest import ingest_sources_for_candidates
+from ml.train_model import run_training
 
 app = FastAPI(
     title="Vital API",
@@ -131,6 +135,7 @@ class ProcessJobsOut(BaseModel):
     jobs_failed: int
     recompute_jobs_done: int
     evidence_jobs_done: int
+    model_retrain_jobs_done: int
 
 
 class InsightCitationOut(BaseModel):
@@ -149,6 +154,9 @@ class InsightOut(BaseModel):
     symptom_name: str
     model_probability: Optional[float] = None
     evidence_strength_score: Optional[float] = None
+    evidence_quality_score: Optional[float] = None
+    penalty_score: Optional[float] = None
+    overall_confidence_score: Optional[float] = None
     evidence_summary: Optional[str] = None
     display_decision_reason: Optional[str] = None
     display_status: Optional[str] = None
@@ -302,6 +310,7 @@ def create_event(payload: EventIn):
         return _event_response(-1, normalized, status="queued", resolution="db_error")
 
     _enqueue_impacted_recompute_jobs(normalized)
+    maybe_enqueue_model_retrain(trigger_user_id=int(normalized["user_id"]))
     return _event_response(created_id, normalized)
 
 
@@ -363,6 +372,7 @@ def process_background_jobs(payload: ProcessJobsIn):
     jobs_failed = 0
     recompute_jobs_done = 0
     evidence_jobs_done = 0
+    model_retrain_jobs_done = 0
 
     for job in jobs:
         job_id = int(job["id"])
@@ -454,6 +464,10 @@ def process_background_jobs(payload: ProcessJobsIn):
                             conn_retry.close()
                 recompute_insights(user_id, target_pairs={(int(item_id), int(symptom_id))})
                 evidence_jobs_done += 1
+            elif job["job_type"] == JOB_MODEL_RETRAIN:
+                run_training(dataset_source=os.getenv("MODEL_RETRAIN_DATASET_SOURCE", "hybrid"))
+                mark_model_retrain_completed()
+                model_retrain_jobs_done += 1
             else:
                 raise ValueError(f"unknown job_type {job['job_type']}")
 
@@ -470,6 +484,7 @@ def process_background_jobs(payload: ProcessJobsIn):
         "jobs_failed": jobs_failed,
         "recompute_jobs_done": recompute_jobs_done,
         "evidence_jobs_done": evidence_jobs_done,
+        "model_retrain_jobs_done": model_retrain_jobs_done,
     }
 
 # list insights per user
