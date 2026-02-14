@@ -176,10 +176,33 @@ CREATE TABLE derived_features_ingredients (
     FOREIGN KEY (ingredient_id) REFERENCES ingredients(id),
     FOREIGN KEY (symptom_id) REFERENCES symptoms(id)
 );
+CREATE TABLE derived_features_combos (
+    id INTEGER NOT NULL PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    combo_key TEXT NOT NULL,
+    item_ids_json TEXT NOT NULL,
+    symptom_id INTEGER NOT NULL,
+    time_gap_min_minutes REAL,
+    time_gap_avg_minutes REAL,
+    cooccurrence_count INTEGER,
+    cooccurrence_unique_symptom_count INTEGER,
+    pair_density REAL,
+    exposure_count_7d INTEGER,
+    symptom_count_7d INTEGER,
+    severity_avg_after REAL,
+    computed_at TEXT,
+    UNIQUE (user_id, combo_key, symptom_id),
+    FOREIGN KEY (user_id) REFERENCES users(id),
+    FOREIGN KEY (symptom_id) REFERENCES symptoms(id)
+);
 CREATE TABLE insights (
     id INTEGER NOT NULL PRIMARY KEY,
     user_id INTEGER NOT NULL,
     item_id INTEGER NOT NULL,
+    secondary_item_id INTEGER,
+    is_combo INTEGER NOT NULL DEFAULT 0,
+    combo_key TEXT,
+    combo_item_ids_json TEXT,
     source_ingredient_id INTEGER,
     symptom_id INTEGER NOT NULL,
     model_score REAL,
@@ -195,6 +218,7 @@ CREATE TABLE insights (
     created_at TEXT,
     FOREIGN KEY (user_id) REFERENCES users(id),
     FOREIGN KEY (item_id) REFERENCES items(id),
+    FOREIGN KEY (secondary_item_id) REFERENCES items(id),
     FOREIGN KEY (source_ingredient_id) REFERENCES ingredients(id),
     FOREIGN KEY (symptom_id) REFERENCES symptoms(id)
 );
@@ -264,6 +288,8 @@ CREATE INDEX idx_insight_event_links_user_event ON insight_event_links(user_id, 
 CREATE INDEX idx_insight_event_links_insight ON insight_event_links(insight_id);
 CREATE INDEX idx_insight_verifications_user ON insight_verifications(user_id);
 CREATE INDEX idx_retrieval_runs_user_item_symptom ON retrieval_runs(user_id, item_id, symptom_id);
+CREATE INDEX idx_derived_features_combos_user_symptom ON derived_features_combos(user_id, symptom_id);
+CREATE INDEX idx_insights_combo_lookup ON insights(user_id, is_combo, combo_key, symptom_id);
 CREATE INDEX idx_recurring_rules_user_active ON recurring_exposure_rules(user_id, is_active);
 INSERT OR IGNORE INTO model_retrain_state (id, last_trained_total_events, last_enqueued_total_events, updated_at)
 VALUES (1, 0, 0, datetime('now'));

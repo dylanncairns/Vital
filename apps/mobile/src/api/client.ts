@@ -32,6 +32,20 @@ function authHeaders(extra: Record<string, string> = {}): Record<string, string>
   return headers;
 }
 
+function parseApiErrorDetail(text: string): string {
+  const trimmed = (text || "").trim();
+  if (!trimmed) return "";
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (parsed && typeof parsed === "object" && typeof parsed.detail === "string") {
+      return parsed.detail.trim();
+    }
+  } catch {
+    // no-op; fall through to raw text
+  }
+  return trimmed;
+}
+
 export async function register(payload: { username: string; password: string; name?: string }): Promise<AuthResponse> {
   const res = await fetch(`${BASE_URL}/auth/register`, {
     method: "POST",
@@ -39,8 +53,18 @@ export async function register(payload: { username: string; password: string; na
     body: JSON.stringify(payload),
   });
   if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Failed to register: ${res.status} ${text}`);
+    const detailRaw = parseApiErrorDetail(await res.text());
+    const detail = detailRaw.toLowerCase();
+    if (detail.includes("username")) {
+      throw new Error("Failed to register: username is already taken");
+    }
+    if (detail.includes("password")) {
+      throw new Error("Failed to register: password must be at least 8 characters");
+    }
+    if (detailRaw) {
+      throw new Error(`Failed to register: ${detailRaw}`);
+    }
+    throw new Error("Failed to register: please check your input and try again");
   }
   const json = await res.json();
   return json;
@@ -53,6 +77,9 @@ export async function login(payload: { username: string; password: string }): Pr
     body: JSON.stringify(payload),
   });
   if (!res.ok) {
+    if (res.status === 401) {
+      throw new Error("Failed to login: invalid username or password");
+    }
     const text = await res.text();
     throw new Error(`Failed to login: ${res.status} ${text}`);
   }

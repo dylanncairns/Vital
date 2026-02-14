@@ -67,6 +67,12 @@ ROUTE_ALIASES = {
     "drank": "ingestion",
     "swallowed": "ingestion",
     "ingested": "ingestion",
+    "sublingual": "ingestion",
+    "buccal": "ingestion",
+    "under tongue": "ingestion",
+    "tablet": "ingestion",
+    "pill": "ingestion",
+    "capsule": "ingestion",
     # dermal / topical
     "topical": "dermal",
     "skin": "dermal",
@@ -78,9 +84,12 @@ ROUTE_ALIASES = {
     "inhale": "inhalation",
     "inhaled": "inhalation",
     "smoked": "inhalation",
+    "smoke": "inhalation",
     "vaped": "inhalation",
+    "vape": "inhalation",
     "nasal": "inhalation",
     "intranasal": "inhalation",
+    "nasal spray": "inhalation",
     # injection
     "iv": "injection",
     "intravenous": "injection",
@@ -105,11 +114,27 @@ ROUTE_ALIASES = {
     "mold": "proximity_environment",
     "smoke exposure": "proximity_environment",
     "proximity environment": "proximity_environment",
+    # lifestyle / physiology (behavioral)
+    "behavioral": "behavioral",
+    "behavioural": "behavioral",
+    "lifestyle": "behavioral",
+    "physiology": "behavioral",
+    "lifestyle physiology": "behavioral",
+    "sleep": "behavioral",
+    "poor sleep": "behavioral",
+    "bad sleep": "behavioral",
+    "exercise": "behavioral",
+    "workout": "behavioral",
+    "walking": "behavioral",
+    "run": "behavioral",
+    "running": "behavioral",
+    "stress": "behavioral",
+    "high stress": "behavioral",
     # fallback
     "unknown": "other",
     "other": "other",
 }
-ROUTE_ALLOWED = {"ingestion", "inhalation", "dermal", "injection", "proximity_environment", "other", "unknown"}
+ROUTE_ALLOWED = {"ingestion", "inhalation", "dermal", "injection", "proximity_environment", "behavioral", "other", "unknown"}
 
 def _normalize_route_token(route: str) -> str:
     value = route.strip().lower()

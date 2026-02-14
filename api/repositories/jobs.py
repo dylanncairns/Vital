@@ -11,6 +11,7 @@ from api.db import get_connection
 JOB_RECOMPUTE_CANDIDATE = "recompute_candidate"
 JOB_EVIDENCE_ACQUIRE_CANDIDATE = "evidence_acquire_candidate"
 JOB_MODEL_RETRAIN = "model_retrain"
+JOB_CITATION_AUDIT = "citation_audit"
 DEFAULT_MAX_FAILED_ATTEMPTS = 5
 DEFAULT_FAILED_RETRY_BASE_SECONDS = 30
 DEFAULT_FAILED_RETRY_MAX_SECONDS = 600

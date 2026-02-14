@@ -694,6 +694,12 @@ def _item_context_mismatch(*, item_name: str | None, text: str) -> bool:
     return True
 
 
+def _combo_item_context_mismatch(*, item_name: str | None, secondary_item_name: str | None, text: str) -> bool:
+    return _item_context_mismatch(item_name=item_name, text=text) or _item_context_mismatch(
+        item_name=secondary_item_name, text=text
+    )
+
+
 def _apply_support_direction_cues(
     *,
     support_direction_score: float,
@@ -785,6 +791,7 @@ def _llm_retrieve_evidence_rows(
     symptom_name: str,
     ingredient_names: list[str],
     item_name: str | None,
+    secondary_item_name: str | None = None,
     routes: list[str] | None = None,
     lag_bucket_counts: dict[str, int] | None = None,
     max_evidence_rows: int,
@@ -803,6 +810,7 @@ def _llm_retrieve_evidence_rows(
         return []
 
     model = os.getenv("RAG_OPENAI_MODEL", "gpt-4.1")
+    is_combo = bool((secondary_item_name or "").strip())
     system_prompt = (
         "You are a scientific evidence assistant. "
         "Use ONLY retrieved file_search chunks from the configured vector store. "
@@ -819,11 +827,19 @@ def _llm_retrieve_evidence_rows(
         "For each support, assign study_design and numeric metrics from the retrieved text only: "
         "study_quality_score, population_match, temporality_match, risk_of_bias, llm_confidence in [0,1]. "
         "Also assign support_direction_score in [-1,1] where -1 is contradictory, 0 is mixed/unclear, "
-        "and +1 is strongly supportive for the exact exposure-symptom linkage and temporal pattern."
+        "and +1 is strongly supportive for the exact exposure-symptom linkage and temporal pattern. "
+        + (
+            "This candidate is a two-exposure combination. "
+            "Only include supports where BOTH exposures are explicitly present in the same citation context. "
+            "Exclude single-exposure papers."
+            if is_combo
+            else ""
+        )
     )
     question_payload = {
         "symptom_name": symptom_name,
         "item_name": item_name,
+        "secondary_item_name": secondary_item_name,
         "ingredient_names": ingredient_names,
         "routes": routes or [],
         "lag_bucket_counts": lag_bucket_counts or {},
@@ -832,6 +848,11 @@ def _llm_retrieve_evidence_rows(
             "Return JSON matching schema exactly.",
             "Citations/supports must map to retrieved results.",
             "Reject citations where candidate exposure term is not explicitly present in snippet/title.",
+            (
+                "For combo candidates, every support must explicitly mention both exposures."
+                if is_combo
+                else "For single candidates, supports must explicitly mention the candidate exposure."
+            ),
             f"Return up to {max_evidence_rows} strongest evidence rows; fewer is preferred over weak matches.",
             "Populate support-level study quality and match metrics strictly in [0,1].",
             "Populate support_direction_score in [-1,1] for each support.",
@@ -973,7 +994,14 @@ def _llm_retrieve_evidence_rows(
             citation_title = str(citation.get("title") or "")
             snippet_value = snippet.strip()
             cue_text = f"{citation_title} {claim.strip()} {snippet_value}".strip()
-            if _item_context_mismatch(item_name=item_name, text=cue_text):
+            if is_combo:
+                if _combo_item_context_mismatch(
+                    item_name=item_name,
+                    secondary_item_name=secondary_item_name,
+                    text=cue_text,
+                ):
+                    continue
+            elif _item_context_mismatch(item_name=item_name, text=cue_text):
                 continue
             if _symptom_context_mismatch(symptom_name=symptom_name, text=cue_text):
                 # Do not ingest support rows for a different symptom than the candidate.
@@ -1098,6 +1126,12 @@ def build_literature_queries(
             continue
         ingredient_ids = candidate.get("ingredient_ids", set())
         item_name = item_name_map.get(int(candidate["item_id"]))
+        secondary_item_id = candidate.get("secondary_item_id")
+        secondary_item_name = (
+            item_name_map.get(int(secondary_item_id))
+            if secondary_item_id is not None
+            else None
+        )
         if ingredient_ids:
             for ingredient_id in sorted(ingredient_ids):
                 ingredient_name = ingredient_name_map.get(int(ingredient_id))
@@ -1107,6 +1141,11 @@ def build_literature_queries(
                 if query not in seen_queries:
                     seen_queries.add(query)
                     queries.append(query)
+        elif item_name and secondary_item_name:
+            query = f"{item_name} + {secondary_item_name} {symptom_name} interaction"
+            if query not in seen_queries:
+                seen_queries.add(query)
+                queries.append(query)
         elif item_name:
             query = f"{item_name} {symptom_name}"
             if query not in seen_queries:
@@ -1174,6 +1213,12 @@ def sync_claims_for_candidates(
                 continue
             candidate_item_id = int(candidate["item_id"])
             item_name = item_name_map.get(candidate_item_id)
+            secondary_item_id = candidate.get("secondary_item_id")
+            secondary_item_name = (
+                item_name_map.get(int(secondary_item_id))
+                if secondary_item_id is not None
+                else None
+            )
             ingredient_ids = sorted(int(value) for value in candidate.get("ingredient_ids", set()))
             ingredient_names = [
                 ingredient_name_map[ingredient_id]
@@ -1181,6 +1226,21 @@ def sync_claims_for_candidates(
                 if ingredient_id in ingredient_name_map
             ]
             llm_rows: list[dict[str, Any]] = []
+            def _call_llm_retriever(*, ingredient_names_arg: list[str]) -> list[dict[str, Any]]:
+                kwargs = {
+                    "symptom_name": symptom_name,
+                    "ingredient_names": ingredient_names_arg,
+                    "item_name": item_name,
+                    "secondary_item_name": secondary_item_name,
+                    "routes": sorted(candidate.get("routes", [])),
+                    "lag_bucket_counts": candidate.get("lag_bucket_counts"),
+                    "max_evidence_rows": max_papers_per_query,
+                }
+                try:
+                    return llm_retriever(**kwargs)
+                except TypeError:
+                    kwargs.pop("secondary_item_name", None)
+                    return llm_retriever(**kwargs)
             if ingredient_ids:
                 # Per expanded ingredient: use existing DB claims when present; call LLM only for missing coverage.
                 missing_ingredient_names: list[str] = []
@@ -1197,27 +1257,13 @@ def sync_claims_for_candidates(
                     if has_existing is None and int(ingredient_id) in ingredient_name_map:
                         missing_ingredient_names.append(str(ingredient_name_map[int(ingredient_id)]))
                 for ingredient_name in missing_ingredient_names:
-                    ingredient_rows = llm_retriever(
-                        symptom_name=symptom_name,
-                        ingredient_names=[ingredient_name],
-                        item_name=item_name,
-                        routes=sorted(candidate.get("routes", [])),
-                        lag_bucket_counts=candidate.get("lag_bucket_counts"),
-                        max_evidence_rows=max_papers_per_query,
-                    )
+                    ingredient_rows = _call_llm_retriever(ingredient_names_arg=[ingredient_name])
                     llm_rows.extend(ingredient_rows)
             else:
-                llm_rows = llm_retriever(
-                    symptom_name=symptom_name,
-                    ingredient_names=ingredient_names,
-                    item_name=item_name,
-                    routes=sorted(candidate.get("routes", [])),
-                    lag_bucket_counts=candidate.get("lag_bucket_counts"),
-                    max_evidence_rows=max_papers_per_query,
-                )
+                llm_rows = _call_llm_retriever(ingredient_names_arg=ingredient_names)
             for row in llm_rows:
                 row_ingredient_id: int | None = None
-                row_item_id: int | None = None
+                target_item_ids: list[int | None] = []
                 if ingredient_ids:
                     ingredient_name = row.get("ingredient_name")
                     if isinstance(ingredient_name, str) and ingredient_name.strip():
@@ -1226,9 +1272,11 @@ def sync_claims_for_candidates(
                         if mapped_ingredient_id in ingredient_ids:
                             row_ingredient_id = mapped_ingredient_id
                     if row_ingredient_id is None:
-                        row_item_id = candidate_item_id
+                        target_item_ids = [candidate_item_id]
                 else:
-                    row_item_id = candidate_item_id
+                    target_item_ids = [candidate_item_id]
+                    if secondary_item_id is not None:
+                        target_item_ids.append(int(secondary_item_id))
                 row_symptom_id = symptom_id
 
                 paper_url = row.get("url")
@@ -1263,46 +1311,49 @@ def sync_claims_for_candidates(
 
                 snippet = row["snippet"]
                 snippet_hash = text_hash(snippet)
-                duplicate = conn.execute(
-                    """
-                    SELECT 1 FROM claims
-                    WHERE paper_id = ?
-                      AND symptom_id = ?
-                      AND chunk_hash = ?
-                      AND ((item_id IS NULL AND ? IS NULL) OR item_id = ?)
-                      AND ((ingredient_id IS NULL AND ? IS NULL) OR ingredient_id = ?)
-                    LIMIT 1
-                    """,
-                    (
-                        paper_id,
-                        row_symptom_id,
-                        snippet_hash,
-                        row_item_id,
-                        row_item_id,
-                        row_ingredient_id,
-                        row_ingredient_id,
-                    ),
-                ).fetchone()
-                if duplicate:
-                    continue
-                claims_added += ingest_paper_claim_chunks(
-                    conn,
-                    paper_id=paper_id,
-                    item_id=row_item_id,
-                    ingredient_id=row_ingredient_id,
-                    symptom_id=row_symptom_id,
-                    summary=row["summary"],
-                    evidence_polarity_and_strength=row["evidence_polarity_and_strength"],
-                    study_design=row.get("study_design"),
-                    study_quality_score=row.get("study_quality_score"),
-                    population_match=row.get("population_match"),
-                    temporality_match=row.get("temporality_match"),
-                    risk_of_bias=row.get("risk_of_bias"),
-                    llm_confidence=row.get("llm_confidence"),
-                    citation_title=row["title"],
-                    citation_url=row["url"],
-                    source_text=snippet,
-                )
+                if row_ingredient_id is not None:
+                    target_item_ids = [None]
+                for row_item_id in target_item_ids:
+                    duplicate = conn.execute(
+                        """
+                        SELECT 1 FROM claims
+                        WHERE paper_id = ?
+                          AND symptom_id = ?
+                          AND chunk_hash = ?
+                          AND ((item_id IS NULL AND ? IS NULL) OR item_id = ?)
+                          AND ((ingredient_id IS NULL AND ? IS NULL) OR ingredient_id = ?)
+                        LIMIT 1
+                        """,
+                        (
+                            paper_id,
+                            row_symptom_id,
+                            snippet_hash,
+                            row_item_id,
+                            row_item_id,
+                            row_ingredient_id,
+                            row_ingredient_id,
+                        ),
+                    ).fetchone()
+                    if duplicate:
+                        continue
+                    claims_added += ingest_paper_claim_chunks(
+                        conn,
+                        paper_id=paper_id,
+                        item_id=row_item_id,
+                        ingredient_id=row_ingredient_id,
+                        symptom_id=row_symptom_id,
+                        summary=row["summary"],
+                        evidence_polarity_and_strength=row["evidence_polarity_and_strength"],
+                        study_design=row.get("study_design"),
+                        study_quality_score=row.get("study_quality_score"),
+                        population_match=row.get("population_match"),
+                        temporality_match=row.get("temporality_match"),
+                        risk_of_bias=row.get("risk_of_bias"),
+                        llm_confidence=row.get("llm_confidence"),
+                        citation_title=row["title"],
+                        citation_url=row["url"],
+                        source_text=snippet,
+                    )
 
     return {"queries_built": len(queries), "papers_added": papers_added, "claims_added": claims_added}
 
@@ -1450,3 +1501,114 @@ def aggregate_evidence(
         ),
         "citations": citations,
     }
+
+
+def generate_user_evidence_summary(
+    *,
+    item_name: str | None,
+    symptom_name: str | None,
+    citations: list[dict[str, Any]],
+    evidence_score: float,
+) -> str | None:
+    # One concise, product-safe sentence generated from citation snippets.
+    if not citations:
+        return None
+
+    client = _get_openai_client()
+    if client is None:
+        return None
+
+    short_citations: list[dict[str, Any]] = []
+    for citation in citations[:4]:
+        short_citations.append(
+            {
+                "title": citation.get("title"),
+                "source": citation.get("source"),
+                "snippet": citation.get("snippet"),
+                "url": citation.get("url"),
+            }
+        )
+    support_direction = "supportive" if float(evidence_score) >= 0 else "contradictory_or_mixed"
+    schema = {
+        "name": "insight_user_summary",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {"summary": {"type": "string"}},
+            "required": ["summary"],
+        },
+    }
+    try:
+        response = client.chat.completions.create(
+            model=os.getenv("OPENAI_SUMMARY_MODEL", os.getenv("RAG_MODEL", "gpt-4o-mini")),
+            temperature=0.1,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Write one concise sentence for a health insight card. "
+                        "Use only provided snippets; do not invent facts. "
+                        "The sentence must describe whether the evidence supports or contradicts "
+                        "a linkage between the provided item_name and symptom_name. "
+                        "Must start exactly with 'Supportive evidence states that ' "
+                        "if direction is supportive, otherwise start with "
+                        "'Current evidence suggests that '. "
+                        "Do not describe study design, sample demographics, journal metadata, or methods. "
+                        "Do not mention claim counts, confidence scores, or model details. "
+                        "Prefer plain language effect wording about the linkage itself. "
+                        "Keep under 24 words."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "item_name": item_name,
+                            "symptom_name": symptom_name,
+                            "direction": support_direction,
+                            "citations": short_citations,
+                        }
+                    ),
+                },
+            ],
+            response_format={"type": "json_schema", "json_schema": schema},
+        )
+    except Exception:
+        return None
+
+    try:
+        content = response.choices[0].message.content or ""
+        payload = json.loads(content)
+        summary = str(payload.get("summary") or "").strip()
+    except Exception:
+        return None
+    if not summary:
+        return None
+    summary = " ".join(summary.split())
+    summary = re.sub(
+        r"(?i)^supportive evidence states that\s+",
+        "Supportive evidence states that ",
+        summary,
+    )
+    summary = re.sub(
+        r"(?i)^current evidence suggests that\s+",
+        "Current evidence suggests that ",
+        summary,
+    )
+    expected_prefix = (
+        "Supportive evidence states that "
+        if float(evidence_score) >= 0
+        else "Current evidence suggests that "
+    )
+    if not summary.lower().startswith(expected_prefix.lower()):
+        summary = f"{expected_prefix}{summary.lstrip()}"
+    if summary.startswith(expected_prefix) and len(summary) > len(expected_prefix):
+        first_char_idx = len(expected_prefix)
+        summary = summary[:first_char_idx] + summary[first_char_idx].lower() + summary[first_char_idx + 1 :]
+    words = summary.split()
+    if len(words) > 24:
+        summary = " ".join(words[:24]).rstrip(" .,:;") + "."
+    if not summary.endswith((".", "!", "?")):
+        summary = f"{summary}."
+    return summary

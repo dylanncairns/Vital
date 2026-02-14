@@ -9,6 +9,7 @@ import api.db
 from api.main import ProcessJobsIn, process_background_jobs
 from api.repositories.jobs import (
     DEFAULT_MAX_FAILED_ATTEMPTS,
+    JOB_CITATION_AUDIT,
     JOB_EVIDENCE_ACQUIRE_CANDIDATE,
     JOB_RECOMPUTE_CANDIDATE,
     count_jobs,
@@ -238,6 +239,34 @@ class BackgroundJobsTests(unittest.TestCase):
         claimed = list_pending_jobs(limit=10)
         ids = {row["id"] for row in claimed}
         self.assertNotIn(created, ids)
+
+    def test_process_citation_audit_job(self) -> None:
+        created = enqueue_background_job(
+            user_id=1,
+            job_type=JOB_CITATION_AUDIT,
+            item_id=None,
+            symptom_id=None,
+            payload={"limit": 50, "delete_missing": True},
+        )
+        self.assertIsNotNone(created)
+
+        with patch(
+            "api.main.audit_claim_citations",
+            return_value={
+                "scanned_urls": 3,
+                "missing_urls": 1,
+                "deleted_claims": 2,
+                "deleted_papers": 1,
+                "errors": 0,
+            },
+        ) as audit_mock:
+            result = process_background_jobs(ProcessJobsIn(limit=10, max_papers_per_query=1))
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["jobs_done"], 1)
+        self.assertEqual(result["jobs_failed"], 0)
+        self.assertEqual(result["citation_audit_jobs_done"], 1)
+        audit_mock.assert_called_once()
 
 
 if __name__ == "__main__":

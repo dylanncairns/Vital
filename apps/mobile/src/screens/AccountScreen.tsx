@@ -22,7 +22,7 @@ export default function AccountScreen() {
     setStatus(null);
     try {
       await updateName(name.trim());
-      setStatus("Name updated.");
+      setStatus("Preferred first name updated.");
       setEditingName(false);
     } catch (err: any) {
       setError(err?.message ?? "Failed to update name.");
@@ -34,9 +34,11 @@ export default function AccountScreen() {
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: "#F7F8FC" }}>
       <View style={{ padding: 16, gap: 12 }}>
-        <Text style={{ fontSize: 24, fontFamily: FONT_SEMIBOLD, color: "#1D2433" }}>Account</Text>
+        <View style={{ paddingTop: 14, paddingBottom: 10, alignItems: "center", justifyContent: "center", minHeight: 44 }}>
+          <Text style={{ fontSize: 28, fontFamily: "Exo2-Bold", color: "#101426", textAlign: "center" }}>Account</Text>
+        </View>
         <Text style={{ color: "#5C6784" }}>Username: {username}</Text>
-        <Text style={{ color: "#5C6784" }}>Display name: {user?.name ?? "-"}</Text>
+        <Text style={{ color: "#5C6784" }}>Preferred first name: {user?.name ?? "-"}</Text>
 
         {!editingName ? (
           <Pressable
@@ -53,14 +55,14 @@ export default function AccountScreen() {
               alignItems: "center",
             }}
           >
-            <Text style={{ color: "#FFF", fontFamily: FONT_SEMIBOLD }}>Change Name</Text>
+            <Text style={{ color: "#FFF", fontFamily: FONT_SEMIBOLD }}>Change Preferred First Name</Text>
           </Pressable>
         ) : (
           <View style={{ gap: 10 }}>
             <TextInput
               value={name}
               onChangeText={setName}
-              placeholder="Display name"
+              placeholder="Preferred first name"
               style={{ borderWidth: 1, borderColor: "#D6DCEB", borderRadius: 10, padding: 12, backgroundColor: "#FFF" }}
             />
             <View style={{ flexDirection: "row", gap: 8 }}>
@@ -76,7 +78,7 @@ export default function AccountScreen() {
                   opacity: busy ? 0.7 : 1,
                 }}
               >
-                <Text style={{ color: "#FFF", fontFamily: FONT_SEMIBOLD }}>{busy ? "Saving..." : "Save Name"}</Text>
+                <Text style={{ color: "#FFF", fontFamily: FONT_SEMIBOLD }}>{busy ? "Saving..." : "Save First Name"}</Text>
               </Pressable>
               <Pressable
                 onPress={() => {

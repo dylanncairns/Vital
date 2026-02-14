@@ -15,11 +15,15 @@ export const styles = StyleSheet.create({
   header: {
     paddingTop: 14,
     paddingBottom: 10,
+    alignItems: "center",
+    justifyContent: "center",
+    minHeight: 44,
   },
   headerTitle: {
     color: TEXT_SOFT_DARK,
     fontSize: 28,
     fontFamily: "Exo2-Bold",
+    textAlign: "center",
   },
   headerLine: {
     flex: 1,

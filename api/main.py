@@ -1,6 +1,7 @@
 import json
 import os
 import sqlite3
+from contextlib import asynccontextmanager
 from typing import Optional
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
@@ -14,6 +15,7 @@ from api.repositories.auth import (
     revoke_session,
 )
 from api.repositories.jobs import (
+    JOB_CITATION_AUDIT,
     JOB_EVIDENCE_ACQUIRE_CANDIDATE,
     JOB_MODEL_RETRAIN,
     JOB_RECOMPUTE_CANDIDATE,
@@ -24,6 +26,7 @@ from api.repositories.jobs import (
     mark_job_failed,
     maybe_enqueue_model_retrain,
 )
+from ml.citation_audit import audit_claim_citations
 from api.repositories.raw_event_ingest import insert_raw_event_ingest
 from api.repositories.resolve import resolve_item_id, resolve_symptom_id
 from api.repositories.recurring import (
@@ -41,6 +44,7 @@ from ingestion.normalize_event import (
     normalize_event,
     normalize_route,
 )
+from ingestion.time_utils import to_utc_iso
 from ml.insights import (
     list_event_insight_links,
     list_insights,
@@ -58,15 +62,19 @@ from ml.rag import (
 from ml.vector_ingest import ingest_sources_for_candidates
 from ml.training_pipeline import run_training
 
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    _ = app
+    initialize_database()
+    yield
+
+
 app = FastAPI(
     title="Vital API",
     version="0.1.0",
+    lifespan=_lifespan,
 )
-
-# Ensure SQLite schema exists on startup
-@app.on_event("startup")
-def on_startup():
-    initialize_database()
 
 # Validate / standardize input JSON payload format for /events
 # Will contain user_id and either item_id + route or symptom_id + severity
@@ -166,6 +174,27 @@ class ProcessJobsOut(BaseModel):
     recompute_jobs_done: int
     evidence_jobs_done: int
     model_retrain_jobs_done: int
+    citation_audit_jobs_done: int
+
+
+class CitationAuditIn(BaseModel):
+    user_id: Optional[int] = None
+    limit: int = Field(default=300, ge=1, le=5000)
+    delete_missing: bool = True
+
+
+class CitationAuditOut(BaseModel):
+    status: str
+    scanned_urls: int
+    missing_urls: int
+    deleted_claims: int
+    deleted_papers: int
+    errors: int
+
+
+class CitationAuditEnqueueOut(BaseModel):
+    status: str
+    job_id: Optional[int] = None
 
 
 class EventPatchIn(BaseModel):
@@ -238,6 +267,11 @@ class InsightOut(BaseModel):
     user_id: int
     item_id: int
     item_name: str
+    secondary_item_id: Optional[int] = None
+    secondary_item_name: Optional[str] = None
+    is_combo: bool = False
+    combo_key: Optional[str] = None
+    combo_item_ids: Optional[list[int]] = None
     source_ingredient_id: Optional[int] = None
     source_ingredient_name: Optional[str] = None
     symptom_id: int
@@ -339,6 +373,15 @@ def _resolve_request_user_id(
     if allow_legacy_explicit and explicit_user_id is not None:
         return int(explicit_user_id)
     raise HTTPException(status_code=401, detail="Authentication required")
+
+
+def _normalize_patch_time_value(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = to_utc_iso(value, strict=True)
+    if normalized is None:
+        return None
+    return normalized
 
 
 def _event_response(event_id: int, event: dict, status: str | None = None, resolution: str | None = None) -> dict:
@@ -662,13 +705,22 @@ def patch_event(
                 params.append(normalized_route)
             if payload.timestamp is not None:
                 updates.append("timestamp = ?")
-                params.append(payload.timestamp)
+                try:
+                    params.append(_normalize_patch_time_value(payload.timestamp))
+                except ValueError:
+                    raise HTTPException(status_code=400, detail="invalid datetime format: timestamp")
             if payload.time_range_start is not None:
                 updates.append("time_range_start = ?")
-                params.append(payload.time_range_start)
+                try:
+                    params.append(_normalize_patch_time_value(payload.time_range_start))
+                except ValueError:
+                    raise HTTPException(status_code=400, detail="invalid datetime format: time_range_start")
             if payload.time_range_end is not None:
                 updates.append("time_range_end = ?")
-                params.append(payload.time_range_end)
+                try:
+                    params.append(_normalize_patch_time_value(payload.time_range_end))
+                except ValueError:
+                    raise HTTPException(status_code=400, detail="invalid datetime format: time_range_end")
             if payload.time_confidence is not None:
                 updates.append("time_confidence = ?")
                 params.append(payload.time_confidence)
@@ -711,13 +763,22 @@ def patch_event(
                 params.append(int(payload.severity))
             if payload.timestamp is not None:
                 updates.append("timestamp = ?")
-                params.append(payload.timestamp)
+                try:
+                    params.append(_normalize_patch_time_value(payload.timestamp))
+                except ValueError:
+                    raise HTTPException(status_code=400, detail="invalid datetime format: timestamp")
             if payload.time_range_start is not None:
                 updates.append("time_range_start = ?")
-                params.append(payload.time_range_start)
+                try:
+                    params.append(_normalize_patch_time_value(payload.time_range_start))
+                except ValueError:
+                    raise HTTPException(status_code=400, detail="invalid datetime format: time_range_start")
             if payload.time_range_end is not None:
                 updates.append("time_range_end = ?")
-                params.append(payload.time_range_end)
+                try:
+                    params.append(_normalize_patch_time_value(payload.time_range_end))
+                except ValueError:
+                    raise HTTPException(status_code=400, detail="invalid datetime format: time_range_end")
             if payload.time_confidence is not None:
                 updates.append("time_confidence = ?")
                 params.append(payload.time_confidence)
@@ -969,6 +1030,37 @@ def sync_rag_evidence(payload: RagSyncIn, authorization: Optional[str] = Header(
     }
 
 
+@app.post("/citations/audit", response_model=CitationAuditOut)
+def audit_citations(payload: CitationAuditIn):
+    conn = get_connection()
+    try:
+        result = audit_claim_citations(
+            conn,
+            limit=payload.limit,
+            delete_missing=payload.delete_missing,
+        )
+        conn.commit()
+    except sqlite3.DatabaseError:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    return {"status": "ok", **result}
+
+
+@app.post("/citations/audit/enqueue", response_model=CitationAuditEnqueueOut)
+def enqueue_citation_audit(payload: CitationAuditIn):
+    enqueue_user_id = int(payload.user_id) if payload.user_id is not None else 1
+    job_id = enqueue_background_job(
+        user_id=enqueue_user_id,
+        job_type=JOB_CITATION_AUDIT,
+        item_id=None,
+        symptom_id=None,
+        payload={"limit": int(payload.limit), "delete_missing": bool(payload.delete_missing)},
+    )
+    return {"status": "ok", "job_id": job_id}
+
+
 @app.post("/jobs/process", response_model=ProcessJobsOut)
 def process_background_jobs(payload: ProcessJobsIn):
     jobs = list_pending_jobs(limit=payload.limit)
@@ -977,6 +1069,7 @@ def process_background_jobs(payload: ProcessJobsIn):
     recompute_jobs_done = 0
     evidence_jobs_done = 0
     model_retrain_jobs_done = 0
+    citation_audit_jobs_done = 0
 
     for job in jobs:
         job_id = int(job["id"])
@@ -1072,6 +1165,23 @@ def process_background_jobs(payload: ProcessJobsIn):
                 run_training(dataset_source=os.getenv("MODEL_RETRAIN_DATASET_SOURCE", "hybrid"))
                 mark_model_retrain_completed()
                 model_retrain_jobs_done += 1
+            elif job["job_type"] == JOB_CITATION_AUDIT:
+                limit = int(job.get("payload", {}).get("limit", 300) or 300)
+                delete_missing = bool(job.get("payload", {}).get("delete_missing", True))
+                conn = get_connection()
+                try:
+                    audit_claim_citations(
+                        conn,
+                        limit=max(1, min(limit, 5000)),
+                        delete_missing=delete_missing,
+                    )
+                    conn.commit()
+                except sqlite3.DatabaseError:
+                    conn.rollback()
+                    raise
+                finally:
+                    conn.close()
+                citation_audit_jobs_done += 1
             else:
                 raise ValueError(f"unknown job_type {job['job_type']}")
 
@@ -1089,6 +1199,7 @@ def process_background_jobs(payload: ProcessJobsIn):
         "recompute_jobs_done": recompute_jobs_done,
         "evidence_jobs_done": evidence_jobs_done,
         "model_retrain_jobs_done": model_retrain_jobs_done,
+        "citation_audit_jobs_done": citation_audit_jobs_done,
     }
 
 # list insights per user

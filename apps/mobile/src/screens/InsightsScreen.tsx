@@ -18,16 +18,38 @@ function prettyLagBucket(bucket: string): string {
   return map[bucket] ?? bucket;
 }
 
-function formatEvidenceSummary(summary: string | null | undefined): string {
-  const raw = (summary ?? "No summary").trim();
+function formatEvidenceSummary(
+  summary: string | null | undefined,
+  opts?: { sourceLabel?: string; citationTitle?: string; abstractSnippet?: string | null }
+): { summary: string; onset: string | null } {
+  let raw = (summary ?? "No summary").trim();
+  // Remove redundant retrieval-count copy; citation count is already shown in UI.
+  raw = raw
+    .replace(/^\s*\d+\s+claim(?:s|\(s\))?\s+retrieved\s*[:;.\-]?\s*/i, "")
+    .replace(/\b\d+\s+claim(?:s|\(s\))?\s+retrieved\s*[:;.\-]?\s*/gi, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+
   const match = raw.match(/Dominant lag window:\s*([A-Za-z0-9_]+)\.?$/);
-  if (!match) {
-    return raw;
+  let onset: string | null = null;
+  if (match) {
+    onset = `Most common onset in your data: ${prettyLagBucket(match[1])}`;
+    raw = raw.replace(/Dominant lag window:\s*[A-Za-z0-9_]+\.?$/, "").trim();
   }
-  const bucket = match[1];
-  const withoutLagSentence = raw.replace(/Dominant lag window:\s*[A-Za-z0-9_]+\.?$/, "").trim();
-  const onsetText = `Most common onset in your data: ${prettyLagBucket(bucket)}`;
-  return withoutLagSentence ? `${withoutLagSentence} ${onsetText}` : onsetText;
+
+  const sourcePart = opts?.sourceLabel ? `from ${opts.sourceLabel} ` : "";
+  const titlePart = opts?.citationTitle ? `(${opts.citationTitle}) ` : "";
+  const snippetRaw = (opts?.abstractSnippet ?? "").replace(/\s+/g, " ").trim();
+  const snippet = snippetRaw.length > 220 ? `${snippetRaw.slice(0, 217).trimEnd()}...` : snippetRaw;
+  const snippetPart = snippet ? `${snippet} ` : "";
+  const intro = snippet
+    ? `Supportive evidence states that ${snippetPart}`
+    : `Supportive evidence ${sourcePart}${titlePart}indicates that `;
+  raw = raw.replace(/^overall evidence is supportive\s*(that)?\s*/i, intro);
+  if (raw && !/[.!?]$/.test(raw)) {
+    raw = `${raw}.`;
+  }
+  return { summary: raw || "No summary.", onset };
 }
 
 function citationSourceLabel(citation: { source?: string | null; url?: string | null }): string {
@@ -48,7 +70,7 @@ function citationSourceLabel(citation: { source?: string | null; url?: string | 
 }
 
 export default function InsightsScreen() {
-  const { user, logout } = useAuth();
+  const { user } = useAuth();
   const [rows, setRows] = useState<Insight[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [pendingInsightId, setPendingInsightId] = useState<number | null>(null);
@@ -82,16 +104,8 @@ export default function InsightsScreen() {
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={load} />}
         contentContainerStyle={[styles.container, { flexGrow: 1 }]}
         ListHeaderComponent={
-          <View style={[styles.header, { flexDirection: "row", justifyContent: "space-between", alignItems: "center" }]}>
+          <View style={styles.header}>
             <Text style={styles.headerTitle}>Insights</Text>
-            <Text
-              onPress={async () => {
-                await logout();
-              }}
-              style={{ color: "#2E5BCE", fontFamily: "Exo2-SemiBold", fontSize: 13 }}
-            >
-              Logout
-            </Text>
           </View>
         }
         ListEmptyComponent={<Text style={styles.emptyText}>No insights yet.</Text>}
@@ -100,6 +114,12 @@ export default function InsightsScreen() {
           const isRejected = Boolean(item.user_rejected);
           const showVerify = !isRejected;
           const showReject = !isVerified;
+          const firstCitation = item.citations?.[0];
+          const formattedEvidence = formatEvidenceSummary(item.evidence_summary, {
+            sourceLabel: firstCitation ? citationSourceLabel(firstCitation) : undefined,
+            citationTitle: firstCitation?.title ?? undefined,
+            abstractSnippet: firstCitation?.snippet ?? null,
+          });
           return (
             <View style={styles.card}>
               <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
@@ -251,7 +271,8 @@ export default function InsightsScreen() {
                   ) : null}
                 </View>
               </View>
-              <Text style={styles.summary}>{formatEvidenceSummary(item.evidence_summary)}</Text>
+              <Text style={styles.summary}>{formattedEvidence.summary}</Text>
+              {formattedEvidence.onset ? <Text style={styles.meta}>{formattedEvidence.onset}</Text> : null}
               <Text style={styles.meta}>
                 Confidence: {typeof item.overall_confidence_score === "number" ? item.overall_confidence_score.toFixed(2) : "-"}
               </Text>

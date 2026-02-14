@@ -56,6 +56,54 @@ class EvaluatorTests(unittest.TestCase):
         self.assertGreaterEqual(overall, 0.0)
         self.assertLessEqual(overall, 1.0)
 
+    def test_penalty_prefers_joint_occurrence_over_marginals(self) -> None:
+        stronger_joint = compute_penalty_score(
+            {
+                "cooccurrence_count": 4.0,
+                "exposure_count_7d": 5.0,
+                "symptom_count_7d": 5.0,
+                "pair_density": 1.0,
+                "time_confidence_score": 1.0,
+                "contradict_ratio": 0.0,
+            }
+        )
+        weak_joint_high_marginals = compute_penalty_score(
+            {
+                "cooccurrence_count": 1.0,
+                "exposure_count_7d": 5.0,
+                "symptom_count_7d": 5.0,
+                "pair_density": 1.0,
+                "time_confidence_score": 1.0,
+                "contradict_ratio": 0.0,
+            }
+        )
+        self.assertLess(stronger_joint, weak_joint_high_marginals)
+
+    def test_penalty_rewards_temporal_lift(self) -> None:
+        weak_lift = compute_penalty_score(
+            {
+                "cooccurrence_count": 2.0,
+                "exposure_count_7d": 4.0,
+                "symptom_count_7d": 3.0,
+                "pair_density": 1.0,
+                "time_confidence_score": 1.0,
+                "contradict_ratio": 0.0,
+                "temporal_lift": 0.6,
+            }
+        )
+        strong_lift = compute_penalty_score(
+            {
+                "cooccurrence_count": 2.0,
+                "exposure_count_7d": 4.0,
+                "symptom_count_7d": 3.0,
+                "pair_density": 1.0,
+                "time_confidence_score": 1.0,
+                "contradict_ratio": 0.0,
+                "temporal_lift": 2.0,
+            }
+        )
+        self.assertLess(strong_lift, weak_lift)
+
     def test_train_and_predict_model(self) -> None:
         x = []
         y = []
@@ -132,6 +180,8 @@ class EvaluatorTests(unittest.TestCase):
                 min_evidence_strength=0.2,
                 min_model_probability=threshold,
                 min_overall_confidence=0.5,
+                min_combo_cooccurrence_for_supported=4.0,
+                min_combo_unique_exposure_events_for_supported=3.0,
                 target_precision=0.75,
                 source="test",
                 path=thresholds_path,
@@ -139,6 +189,10 @@ class EvaluatorTests(unittest.TestCase):
             loaded = get_decision_thresholds(path=thresholds_path)
             self.assertAlmostEqual(loaded["min_evidence_strength"], 0.2)
             self.assertAlmostEqual(loaded["min_overall_confidence"], 0.5)
+            self.assertAlmostEqual(loaded["min_combo_cooccurrence_for_supported"], 4.0)
+            self.assertAlmostEqual(loaded["min_combo_unique_exposure_events_for_supported"], 3.0)
+            self.assertIn("min_temporal_lift", loaded)
+            self.assertIn("min_combo_temporal_lift", loaded)
 
 
 if __name__ == "__main__":

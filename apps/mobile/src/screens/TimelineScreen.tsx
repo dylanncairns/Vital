@@ -8,9 +8,12 @@ import { styles } from "./TimelineScreen.styles";
 import { useAuth } from "../auth/AuthContext";
 
 const ROUTE_OPTIONS = [
-  { value: "ingestion", label: "Ingestion" },
+  { value: "ingestion", label: "Food / Drink (Ingestion)" },
+  { value: "oral", label: "Oral medication / supplement" },
+  { value: "behavioral", label: "Lifestyle / Physiology" },
   { value: "dermal", label: "Topical / Dermal" },
   { value: "inhalation", label: "Inhalation" },
+  { value: "intranasal", label: "Nasal / Sinus" },
   { value: "injection", label: "Injection" },
   { value: "proximity_environment", label: "Proximity / Environment" },
   { value: "other", label: "Other" },
@@ -53,7 +56,8 @@ export default function TimelineScreen() {
     }
 
     function toIsoFromParts(date: Date): string {
-      return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString();
+      // Keep the exact instant selected in local picker; backend stores UTC.
+      return date.toISOString();
     }
 
     function clampDay(year: number, month1: number, day: number): number {
@@ -91,7 +95,12 @@ export default function TimelineScreen() {
     function normalizeRouteValue(value: string | null | undefined): string {
       const raw = (value ?? "").trim().toLowerCase().replace(/\//g, "_").replace(/\s+/g, "_");
       if (!raw || raw === "unknown") return "other";
+      if (raw === "oral" || raw === "sublingual" || raw === "buccal") return "ingestion";
+      if (raw === "behavioral" || raw === "behavioural" || raw === "lifestyle" || raw === "physiology" || raw === "lifestyle_physiology") return "behavioral";
       if (raw === "topical") return "dermal";
+      if (raw === "transdermal") return "dermal";
+      if (raw === "intranasal" || raw === "nasal_spray") return "inhalation";
+      if (raw === "intravenous" || raw === "intramuscular" || raw === "subcutaneous" || raw === "iv" || raw === "im" || raw === "subq" || raw === "sq") return "injection";
       if (raw === "proximity" || raw === "environment" || raw === "proximity_environment") return "proximity_environment";
       if (ROUTE_OPTIONS.some((option) => option.value === raw)) return raw;
       return "other";
@@ -101,6 +110,12 @@ export default function TimelineScreen() {
       () => ROUTE_OPTIONS.find((option) => option.value === normalizeRouteValue(editRoute))?.label ?? "Other",
       [editRoute]
     );
+    const timelineHeaderTitle = useMemo(() => {
+      const firstName = (user?.name ?? "").trim().split(/\s+/)[0] ?? "";
+      if (!firstName) return "Your Timeline";
+      const possessive = /s$/i.test(firstName) ? `${firstName}'` : `${firstName}'s`;
+      return `${possessive} Timeline`;
+    }, [user?.name]);
 
     function prettyLagBucket(bucket: string): string {
       const map: Record<string, string> = {
@@ -112,16 +127,37 @@ export default function TimelineScreen() {
       return map[bucket] ?? bucket;
     }
 
-    function formatEvidenceSummary(summary: string | null | undefined): string {
-      const raw = (summary ?? "No summary").trim();
+    function formatEvidenceSummary(
+      summary: string | null | undefined,
+      opts?: { sourceLabel?: string; citationTitle?: string; abstractSnippet?: string | null }
+    ): { summary: string; onset: string | null } {
+      let raw = (summary ?? "No summary").trim();
+      raw = raw
+        .replace(/^\s*\d+\s+claim(?:s|\(s\))?\s+retrieved\s*[:;.\-]?\s*/i, "")
+        .replace(/\b\d+\s+claim(?:s|\(s\))?\s+retrieved\s*[:;.\-]?\s*/gi, "")
+        .replace(/\s{2,}/g, " ")
+        .trim();
       const match = raw.match(/Dominant lag window:\s*([A-Za-z0-9_]+)\.?$/);
+      const sourcePart = opts?.sourceLabel ? `from ${opts.sourceLabel} ` : "";
+      const titlePart = opts?.citationTitle ? `(${opts.citationTitle}) ` : "";
+      const snippetRaw = (opts?.abstractSnippet ?? "").replace(/\s+/g, " ").trim();
+      const snippet = snippetRaw.length > 220 ? `${snippetRaw.slice(0, 217).trimEnd()}...` : snippetRaw;
+      const snippetPart = snippet ? `${snippet} ` : "";
+      const intro = snippet
+        ? `Supportive evidence states that ${snippetPart}`
+        : `Supportive evidence ${sourcePart}${titlePart}indicates that `;
       if (!match) {
-        return raw;
+        raw = raw.replace(/^overall evidence is supportive\s*(that)?\s*/i, intro);
+        return { summary: raw, onset: null };
       }
       const bucket = match[1];
       const withoutLagSentence = raw.replace(/Dominant lag window:\s*[A-Za-z0-9_]+\.?$/, "").trim();
       const onsetText = `Most common onset in your data: ${prettyLagBucket(bucket)}`;
-      return withoutLagSentence ? `${withoutLagSentence} ${onsetText}` : onsetText;
+      const rewritten = withoutLagSentence.replace(
+        /^overall evidence is supportive\s*(that)?\s*/i,
+        intro
+      );
+      return { summary: rewritten, onset: onsetText };
     }
 
     function citationSourceLabel(citation: { source?: string | null; url?: string | null }): string {
@@ -141,9 +177,9 @@ export default function TimelineScreen() {
       }
     }
 
-    const load = useCallback(async () => {
+    const load = useCallback(async (showRefresh: boolean = false) => {
         if (!user) return;
-        setRefreshing(true);
+        if (showRefresh) setRefreshing(true);
         try {
             const [data, links, insights] = await Promise.all([
               fetchEvents(user.id),
@@ -194,7 +230,7 @@ export default function TimelineScreen() {
             }
             setEventInsightMap(mapped);
         } finally {
-            setRefreshing(false);
+            if (showRefresh) setRefreshing(false);
         }
     }, [user]);
 
@@ -205,7 +241,7 @@ export default function TimelineScreen() {
 
     useFocusEffect(
       useCallback(() => {
-        load();
+        load(false);
       }, [load])
     );
 
@@ -245,13 +281,13 @@ export default function TimelineScreen() {
       <FlatList
         data={rows}
         keyExtractor={(item) => item.key}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={load} />}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => load(true)} />}
         contentContainerStyle={[styles.container, { flexGrow: 1 }]}
         bounces={true}
         alwaysBounceVertical={true}
         ListHeaderComponent={
           <View style={styles.header}>
-            <Text style={styles.headerTitle}>Timeline</Text>
+            <Text style={styles.headerTitle}>{timelineHeaderTitle}</Text>
           </View>
         }
         renderItem={({ item }) => {
@@ -373,6 +409,16 @@ export default function TimelineScreen() {
                         onChangeText={setEditSeverity}
                       />
                     )}
+                    {isExposure && ["unknown", "other"].includes(normalizeRouteValue(editRoute)) ? (
+                      <Text style={{ color: "#5B6381", fontFamily: "Exo2-Regular", fontSize: 12 }}>
+                        Adding route improves model accuracy and confidence.
+                      </Text>
+                    ) : null}
+                    {!isExposure && !editSeverity.trim() ? (
+                      <Text style={{ color: "#5B6381", fontFamily: "Exo2-Regular", fontSize: 12 }}>
+                        Adding severity improves model accuracy and confidence.
+                      </Text>
+                    ) : null}
                     <View style={{ flexDirection: "row", gap: 10 }}>
                       <TouchableOpacity
                         style={{ backgroundColor: "#0A7A4F", borderRadius: 8, paddingHorizontal: 12, paddingVertical: 8 }}
@@ -683,9 +729,26 @@ export default function TimelineScreen() {
                       </View>
                     );
                   })()}
-                  <Text style={{ fontSize: 14, fontFamily: "Exo2-Regular", color: "#343A52" }}>
-                    {formatEvidenceSummary(selectedInsight.evidence_summary)}
-                  </Text>
+                  {(() => {
+                    const firstCitation = (selectedInsight.citations ?? [])[0];
+                    const formattedEvidence = formatEvidenceSummary(selectedInsight.evidence_summary, {
+                      sourceLabel: firstCitation ? citationSourceLabel(firstCitation) : undefined,
+                      citationTitle: firstCitation?.title ?? undefined,
+                      abstractSnippet: firstCitation?.snippet ?? null,
+                    });
+                    return (
+                      <>
+                        <Text style={{ fontSize: 14, fontFamily: "Exo2-Regular", color: "#343A52" }}>
+                          {formattedEvidence.summary}
+                        </Text>
+                        {formattedEvidence.onset ? (
+                          <Text style={{ fontSize: 12, fontFamily: "Exo2-Regular", color: "#69708A" }}>
+                            {formattedEvidence.onset}
+                          </Text>
+                        ) : null}
+                      </>
+                    );
+                  })()}
                   <Text style={{ fontSize: 12, fontFamily: "Exo2-Regular", color: "#69708A" }}>
                     Confidence: {typeof selectedInsight.overall_confidence_score === "number" ? selectedInsight.overall_confidence_score.toFixed(2) : "-"}
                   </Text>

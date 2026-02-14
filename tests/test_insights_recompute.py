@@ -312,6 +312,7 @@ class InsightsRecomputeTests(unittest.TestCase):
                 "suppressed_low_model_probability",
                 "suppressed_low_overall_confidence",
                 "suppressed_insufficient_recurrence",
+                "suppressed_generic_monotone_context",
             },
         )
 
@@ -375,6 +376,62 @@ class InsightsRecomputeTests(unittest.TestCase):
         )
         assert insight is not None
         self.assertEqual(str(insight["display_decision_reason"]), "suppressed_insufficient_recurrence")
+
+    def test_recompute_suppresses_generic_work_without_qualifiers(self) -> None:
+        self._exec(
+            "INSERT INTO users (id, created_at, name) VALUES (6, '2026-01-01T00:00:00Z', 'u6')"
+        )
+        self._exec("INSERT INTO items (id, name, category) VALUES (6, 'work', 'behavioral')")
+        self._exec("INSERT INTO symptoms (id, name, description) VALUES (6, 'headache', 'd')")
+        self._exec(
+            """
+            INSERT INTO papers (id, title, url, abstract, publication_date, source, ingested_at)
+            VALUES (6, 'Work and headache', 'https://example.org/work-headache', 'ctx', '2025-01-01', 'seed', '2026-01-01T00:00:00Z')
+            """
+        )
+        conn = api.db.get_connection()
+        try:
+            ingest_paper_claim_chunks(
+                conn,
+                paper_id=6,
+                item_id=6,
+                ingredient_id=None,
+                symptom_id=6,
+                summary="Occupational factors may relate to headache.",
+                evidence_polarity_and_strength=1,
+                citation_title="Work and headache",
+                citation_url="https://example.org/work-headache",
+                source_text="Occupational factors may relate to headache.",
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        self._exec(
+            """
+            INSERT INTO exposure_events (id, user_id, item_id, timestamp, route, raw_text)
+            VALUES
+              (601, 6, 6, '2026-01-01T08:00:00Z', 'behavioral', 'work')
+            """
+        )
+        self._exec(
+            """
+            INSERT INTO symptom_events (id, user_id, symptom_id, timestamp, severity)
+            VALUES (603, 6, 6, '2026-01-02T12:00:00Z', 3)
+            """
+        )
+
+        recompute_insights(6)
+        insight = self._fetchone(
+            """
+            SELECT display_decision_reason
+            FROM insights
+            WHERE user_id = 6 AND item_id = 6 AND symptom_id = 6
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        )
+        assert insight is not None
+        self.assertEqual(str(insight["display_decision_reason"]), "suppressed_generic_monotone_context")
 
 
 if __name__ == "__main__":

@@ -237,3 +237,18 @@
     - migration from SQLite to PostgreSQL
     - make the confidence score computation more accurate
     - refine the ingestion pipeline
+
+## Commit 20
+- refined UI cards for insights tab, and added a brief explanation of each insight via citation abstracts with api call fed citations + abstracts per insight to retrieve summary
+- added explanation of missing metrics affecting model computation in "edit event" screen
+- refined drift monitoring and score quality guardrails
+    - Final score now auto falls back to conservative scoring if runtime output distribution looks unstable and fusion model usage is disabled if the monitor version's scoring doesn’t roughly match current artifacts/thresholds in distribution
+- refined ingestion pipeline under temporal uncertainity and edge case grammar
+- implemented multi-exposure to one symptom candidates (A + B = C instead of pure A = C)
+    - for cases where two symptoms combined can be linked to a symptom, due to either large sum of similar effects or combined synergized effects
+    - added ComboAggregate and _build_candidate_aggregates
+- XGBoost now emphasizes a user's personal timeline data and feedback slightly more than global user data and training data
+- Engineered XBGoost features to compute candidate probability differently when assessing temporal context for each different primary route of exposure  
+- added background worker that calls a web search using stored db citation links and removes it from DB if citation does not exist (auditing/verifying body of evidence)
+    - does this only when a citation_audit job is queued (see runbook.md)
+- committing here before database migration with alembic

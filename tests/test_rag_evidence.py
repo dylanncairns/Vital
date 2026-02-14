@@ -297,6 +297,72 @@ class RagEvidenceTests(unittest.TestCase):
         self.assertIsNone(row["ingredient_id"])
         self.assertEqual(row["symptom_id"], 2)
 
+    def test_enrich_claims_combo_candidate_indexes_both_items(self) -> None:
+        self._exec("INSERT INTO items (id, name, category) VALUES (30, 'alcohol', 'food')")
+        self._exec("INSERT INTO items (id, name, category) VALUES (31, 'poor sleep', 'lifestyle')")
+
+        def fake_llm_retriever(
+            *,
+            symptom_name: str,
+            ingredient_names: list[str],
+            item_name: str | None,
+            secondary_item_name: str | None = None,
+            routes: list[str] | None = None,
+            lag_bucket_counts: dict[str, int] | None = None,
+            max_evidence_rows: int,
+        ) -> list[dict]:
+            _ = (
+                symptom_name,
+                ingredient_names,
+                item_name,
+                secondary_item_name,
+                routes,
+                lag_bucket_counts,
+                max_evidence_rows,
+            )
+            return [
+                {
+                    "title": "Alcohol and sleep loss jointly increase headache risk",
+                    "url": "https://example.org/alcohol-sleep-headache",
+                    "publication_date": "2024",
+                    "source": "Headache Journal",
+                    "item_name": "alcohol",
+                    "ingredient_name": None,
+                    "symptom_name": "headache",
+                    "summary": "Combined alcohol use and poor sleep were linked to more headache episodes.",
+                    "snippet": "Combined alcohol use and poor sleep were linked to more headache episodes.",
+                    "evidence_polarity_and_strength": 1,
+                }
+            ]
+
+        conn = api.db.get_connection()
+        try:
+            result = enrich_claims_for_candidates(
+                conn,
+                candidates=[{"item_id": 30, "secondary_item_id": 31, "symptom_id": 2, "ingredient_ids": set()}],
+                ingredient_name_map={},
+                symptom_name_map={2: "headache"},
+                item_name_map={30: "alcohol", 31: "poor sleep"},
+                online_enabled=True,
+                max_papers_per_query=1,
+                llm_retriever=fake_llm_retriever,
+            )
+            conn.commit()
+            rows = conn.execute(
+                """
+                SELECT item_id
+                FROM claims
+                WHERE symptom_id = 2
+                  AND citation_url = 'https://example.org/alcohol-sleep-headache'
+                ORDER BY item_id
+                """
+            ).fetchall()
+        finally:
+            conn.close()
+
+        self.assertGreaterEqual(result["claims_added"], 2)
+        self.assertEqual([int(row["item_id"]) for row in rows], [30, 31])
+
     def test_llm_retrieval_filters_to_grounded_source_urls(self) -> None:
         class FakeResponse:
             def model_dump(self):
@@ -335,7 +401,10 @@ class RagEvidenceTests(unittest.TestCase):
                             },
                         ],
                         "evidence": [
-                            {"claim": "Allowed claim", "supports": [{"citation_id": "c1", "snippet": "s1", "chunk_id": "chunk-1"}]},
+                            {
+                                "claim": "Allowed claim about sugar and acne",
+                                "supports": [{"citation_id": "c1", "snippet": "sugar acne signal", "chunk_id": "chunk-1"}],
+                            },
                             {"claim": "Ungrounded claim", "supports": [{"citation_id": "c2", "snippet": "s2", "chunk_id": "chunk-2"}]},
                         ],
                     },

@@ -34,6 +34,8 @@ class IngestTextJobsTests(unittest.TestCase):
     def _seed(self) -> None:
         self._exec("INSERT INTO users (id, created_at, name) VALUES (1, '2026-01-01T00:00:00Z', 'u')")
         self._exec("INSERT INTO items (id, name, category) VALUES (1, 'alcohol', 'food')")
+        self._exec("INSERT INTO items (id, name, category) VALUES (2, 'chicken', 'food')")
+        self._exec("INSERT INTO items (id, name, category) VALUES (3, 'rice', 'food')")
         self._exec("INSERT INTO symptoms (id, name, description) VALUES (1, 'headache', 'd')")
 
     def test_ingest_text_symptom_queues_jobs_for_existing_exposures(self) -> None:
@@ -85,6 +87,24 @@ class IngestTextJobsTests(unittest.TestCase):
         self.assertEqual(result["status"], "ingested")
         self.assertEqual(result["event_type"], "exposure")
         self.assertGreaterEqual(int(result.get("jobs_queued", 0)), 1)
+
+    def test_ingest_text_fans_out_multi_item_exposure_clause(self) -> None:
+        result = ingest_text_event(1, "For lunch I had chicken and rice.")
+        self.assertEqual(result["status"], "ingested")
+        conn = api.db.get_connection()
+        try:
+            rows = conn.execute(
+                """
+                SELECT i.name
+                FROM exposure_events e
+                JOIN items i ON i.id = e.item_id
+                WHERE e.user_id = 1
+                ORDER BY i.name
+                """
+            ).fetchall()
+        finally:
+            conn.close()
+        self.assertEqual([row["name"] for row in rows], ["chicken", "rice"])
 
 
 if __name__ == "__main__":

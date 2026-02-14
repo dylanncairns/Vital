@@ -22,9 +22,12 @@ import { useAuth } from "../auth/AuthContext";
 const FONT_SEMIBOLD = "Exo2-SemiBold";
 const FONT_BOLD = "Exo2-Bold";
 const ROUTE_OPTIONS = [
-  { value: "ingestion", label: "Ingestion" },
+  { value: "ingestion", label: "Food / Drink (Ingestion)" },
+  { value: "oral", label: "Oral medication / supplement" },
+  { value: "behavioral", label: "Lifestyle / Physiology" },
   { value: "dermal", label: "Topical / Dermal" },
   { value: "inhalation", label: "Inhalation" },
+  { value: "intranasal", label: "Nasal / Sinus" },
   { value: "injection", label: "Injection" },
   { value: "proximity_environment", label: "Proximity / Environment" },
   { value: "other", label: "Other" },
@@ -37,7 +40,8 @@ function formatIsoForDisplay(iso: string): string {
 }
 
 function toIsoFromParts(date: Date): string {
-  return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString();
+  // Keep the exact instant selected in local picker; backend stores UTC.
+  return date.toISOString();
 }
 
 function clampDay(year: number, month1: number, day: number): number {
@@ -183,9 +187,11 @@ export default function LogEventScreen() {
   }
 
   return (
-    <SafeAreaView style={{ flex: 1 }}>
+    <SafeAreaView style={{ flex: 1, backgroundColor: "#F7F8FB" }}>
       <ScrollView contentContainerStyle={{ padding: 16, gap: 14 }}>
-        <Text style={{ fontSize: 18, fontFamily: FONT_SEMIBOLD }}>Log Event</Text>
+        <View style={{ paddingTop: 14, paddingBottom: 10, alignItems: "center", justifyContent: "center", minHeight: 44 }}>
+          <Text style={{ fontSize: 28, fontFamily: FONT_BOLD, color: "#101426", textAlign: "center" }}>Log Event</Text>
+        </View>
 
         <View style={{ padding: 12, borderWidth: 1, borderColor: "#E1E5EE", borderRadius: 10, gap: 10 }}>
           <Text style={{ fontSize: 16, fontFamily: FONT_SEMIBOLD }}>Log an Exposure</Text>

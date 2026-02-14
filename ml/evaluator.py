@@ -19,6 +19,23 @@ from sklearn.metrics import precision_recall_curve
 
 from api.db import DB_PATH
 
+ROUTE_BUCKETS = (
+    "ingestion",
+    "inhalation",
+    "dermal",
+    "injection",
+    "proximity_environment",
+    "behavioral",
+    "other",
+    "unknown",
+)
+LAG_BUCKET_KEYS = ("0_6h", "6_24h", "24_72h", "72h_7d")
+ROUTE_TEMPORAL_FEATURES = (
+    [f"route_share_{route}" for route in ROUTE_BUCKETS]
+    + [f"route_min_lag_{route}" for route in ROUTE_BUCKETS]
+    + [f"route_lag_0_24h_share_{route}" for route in ROUTE_BUCKETS]
+    + [f"route_lag_24h_7d_share_{route}" for route in ROUTE_BUCKETS]
+)
 
 FEATURE_ORDER = [
     "time_gap_min_minutes",
@@ -45,7 +62,7 @@ FEATURE_ORDER = [
     "risk_of_bias",
     "llm_confidence",
     "time_confidence_score",
-]
+] + ROUTE_TEMPORAL_FEATURES
 
 DEFAULT_XGBOOST_MODEL_PATH = DB_PATH.parent / "model_artifact.xgb.json"
 DEFAULT_CURATED_TRAINING_PATH = DB_PATH.parent / "curated_linkages.json"
@@ -95,6 +112,19 @@ def _stable_jitter(key: str, *, amplitude: float = 1.0) -> float:
     value = int.from_bytes(digest[:8], byteorder="big", signed=False) / float(2**64)
     centered = (value * 2.0) - 1.0
     return centered * amplitude
+
+
+def _joint_recurrence_metrics(
+    *,
+    cooccurrence_count: float,
+    exposure_count_7d: float,
+    symptom_count_7d: float,
+) -> tuple[float, float, float]:
+    shared_pool = max(1.0, min(exposure_count_7d, symptom_count_7d))
+    joint_ratio = clamp(cooccurrence_count / shared_pool, 0.0, 1.0)
+    unmatched_exposure = max(0.0, exposure_count_7d - cooccurrence_count)
+    unmatched_symptom = max(0.0, symptom_count_7d - cooccurrence_count)
+    return joint_ratio, unmatched_exposure, unmatched_symptom
 
 
 def compute_evidence_quality(evidence: dict[str, Any]) -> dict[str, float]:
@@ -180,9 +210,17 @@ def compute_evidence_quality(evidence: dict[str, Any]) -> dict[str, float]:
 def compute_penalty_score(feature_map: dict[str, float]) -> float:
     cooccurrence_count = max(0.0, _safe_float(feature_map.get("cooccurrence_count")))
     exposure_count_7d = max(0.0, _safe_float(feature_map.get("exposure_count_7d")))
+    symptom_count_7d = max(0.0, _safe_float(feature_map.get("symptom_count_7d")))
     pair_density = max(0.0, _safe_float(feature_map.get("pair_density")))
     time_confidence = clamp(_safe_float(feature_map.get("time_confidence_score"), 0.0), 0.0, 1.0)
     contradict_ratio = clamp(_safe_float(feature_map.get("contradict_ratio"), 0.0), 0.0, 1.0)
+    temporal_lift = max(0.0, _safe_float(feature_map.get("temporal_lift"), 1.0))
+    temporal_lift_score = clamp((temporal_lift - 0.5) / 1.5, 0.0, 1.0)
+    joint_recurrence_ratio, unmatched_exposure, unmatched_symptom = _joint_recurrence_metrics(
+        cooccurrence_count=cooccurrence_count,
+        exposure_count_7d=exposure_count_7d,
+        symptom_count_7d=symptom_count_7d,
+    )
 
     sparse_penalty = 0.0
     if cooccurrence_count <= 1.0:
@@ -190,13 +228,21 @@ def compute_penalty_score(feature_map: dict[str, float]) -> float:
     elif cooccurrence_count <= 2.0:
         sparse_penalty = 0.08
 
-    baseline_penalty = clamp(exposure_count_7d / 35.0, 0.0, 0.22)
+    baseline_penalty = clamp(unmatched_exposure / 24.0, 0.0, 0.22) * (1.0 - 0.5 * temporal_lift_score)
+    symptom_marginal_penalty = clamp(unmatched_symptom / 10.0, 0.0, 0.16) * (1.0 - 0.5 * temporal_lift_score)
     confound_penalty = clamp(max(0.0, pair_density - 1.0) * 0.06, 0.0, 0.18)
     time_penalty = 0.25 * (1.0 - time_confidence)
     contradiction_penalty = 0.22 * contradict_ratio
+    weak_joint_signal_penalty = 0.10 * (1.0 - joint_recurrence_ratio) + 0.12 * (1.0 - temporal_lift_score)
 
     return clamp(
-        sparse_penalty + baseline_penalty + confound_penalty + time_penalty + contradiction_penalty,
+        sparse_penalty
+        + baseline_penalty
+        + symptom_marginal_penalty
+        + confound_penalty
+        + time_penalty
+        + contradiction_penalty
+        + weak_joint_signal_penalty,
         0.0,
         0.75,
     )
@@ -213,8 +259,9 @@ def combine_scores(*, model_probability: float, evidence_quality: float, penalty
     )
 
 
-def build_feature_vector(feature_map: dict[str, float]) -> list[float]:
-    return [_safe_float(feature_map.get(name), 0.0) for name in FEATURE_ORDER]
+def build_feature_vector(feature_map: dict[str, float], *, feature_order: list[str] | None = None) -> list[float]:
+    order = feature_order or FEATURE_ORDER
+    return [_safe_float(feature_map.get(name), 0.0) for name in order]
 
 
 def train_xgboost_model(
@@ -294,9 +341,15 @@ def predict_model_probability(
     _ensure_default_model_exists(resolved_path)
     if not resolved_path.exists():
         raise FileNotFoundError(f"Model artifact missing: {resolved_path}")
-    vector = build_feature_vector(feature_map)
     model = _load_model(resolved_path)
-    matrix = xgb.DMatrix([vector], feature_names=FEATURE_ORDER)
+    model_feature_order = getattr(model, "feature_names", None)
+    inference_order = (
+        [str(name) for name in model_feature_order]
+        if isinstance(model_feature_order, list) and model_feature_order
+        else FEATURE_ORDER
+    )
+    vector = build_feature_vector(feature_map, feature_order=inference_order)
+    matrix = xgb.DMatrix([vector], feature_names=inference_order)
     preds = model.predict(matrix)
     if len(preds) == 0:
         return 0.0
@@ -383,6 +436,14 @@ def _stabilize_personal_probability(probability: float, feature_map: dict[str, f
     pair_density = max(0.0, _safe_float(feature_map.get("pair_density"), 0.0))
     time_gap_min = max(0.0, _safe_float(feature_map.get("time_gap_min_minutes"), 0.0))
     symptom_count_7d = max(0.0, _safe_float(feature_map.get("symptom_count_7d"), 0.0))
+    exposure_count_7d = max(0.0, _safe_float(feature_map.get("exposure_count_7d"), 0.0))
+    temporal_lift = max(0.0, _safe_float(feature_map.get("temporal_lift"), 1.0))
+    temporal_lift_score = clamp((temporal_lift - 0.5) / 1.5, 0.0, 1.0)
+    joint_recurrence_ratio, unmatched_exposure, unmatched_symptom = _joint_recurrence_metrics(
+        cooccurrence_count=cooccurrence,
+        exposure_count_7d=exposure_count_7d,
+        symptom_count_7d=symptom_count_7d,
+    )
 
     if time_gap_min <= 360.0:
         lag_score = 1.0
@@ -393,21 +454,36 @@ def _stabilize_personal_probability(probability: float, feature_map: dict[str, f
     else:
         lag_score = 0.35
 
-    symptom_noise_penalty = clamp(symptom_count_7d / 10.0, 0.0, 0.40)
+    symptom_noise_penalty = clamp(unmatched_symptom / 8.0, 0.0, 0.40)
+    exposure_noise_penalty = clamp(unmatched_exposure / 12.0, 0.0, 0.25)
     temporal_baseline = clamp(
-        0.60 * recurrence_factor
+        0.50 * recurrence_factor
         + 0.15 * lag_score
-        + 0.15 * time_confidence
-        + 0.10 * (1.0 - symptom_noise_penalty),
+        + 0.12 * time_confidence
+        + 0.10 * joint_recurrence_ratio
+        + 0.13 * temporal_lift_score
+        + 0.05 * (1.0 - symptom_noise_penalty),
         0.0,
         1.0,
     )
 
-    p = clamp(probability, 0.0, 1.0)
-    p = (0.35 * p) + (0.65 * temporal_baseline)
-    p *= 1.0 - (0.25 * contradict_ratio)
-    p *= 1.0 - clamp(max(0.0, pair_density - 1.0) * 0.05, 0.0, 0.20)
-    return clamp(p, 0.0, 1.0)
+    raw_p = clamp(probability, 0.0, 1.0)
+    adjusted = (0.40 * raw_p) + (0.60 * temporal_baseline)
+    adjusted *= 1.0 - (0.25 * contradict_ratio)
+    adjusted *= 1.0 - clamp(max(0.0, pair_density - 1.0) * 0.05, 0.0, 0.20)
+    adjusted *= 1.0 - exposure_noise_penalty
+    adjusted = clamp(adjusted, 0.0, 1.0)
+
+    # Guardrail: cap personalization drift so global model signal is not overwritten.
+    # This keeps personalization meaningful but controlled.
+    citation_count = max(0.0, _safe_float(feature_map.get("citation_count"), 0.0))
+    max_upshift = 0.12 + (0.06 * recurrence_factor)
+    if citation_count < 1.0:
+        max_upshift = min(max_upshift, 0.08)
+    max_downshift = 0.18
+    lower = clamp(raw_p - max_downshift, 0.0, 1.0)
+    upper = clamp(raw_p + max_upshift, 0.0, 1.0)
+    return clamp(adjusted, lower, upper)
 
 
 def tune_model_threshold(
@@ -454,6 +530,14 @@ def save_decision_thresholds(
     min_unique_exposure_events_for_supported: float = 2.0,
     single_exposure_override_min_evidence_strength: float = 0.92,
     single_exposure_override_min_citations: float = 4.0,
+    min_combo_item_citations: float = 1.0,
+    min_combo_item_support_direction: float = 0.10,
+    min_combo_pair_citations: float = 1.0,
+    min_combo_pair_support_direction: float = 0.10,
+    min_combo_cooccurrence_for_supported: float = 3.0,
+    min_combo_unique_exposure_events_for_supported: float = 2.0,
+    min_temporal_lift: float = 1.05,
+    min_combo_temporal_lift: float = 1.10,
     target_precision: float,
     source: str,
     path: Path = DEFAULT_THRESHOLDS_PATH,
@@ -472,6 +556,16 @@ def save_decision_thresholds(
             single_exposure_override_min_evidence_strength, 0.0, 1.0
         ),
         "single_exposure_override_min_citations": max(1.0, float(single_exposure_override_min_citations)),
+        "min_combo_item_citations": max(1.0, float(min_combo_item_citations)),
+        "min_combo_item_support_direction": clamp(min_combo_item_support_direction, -1.0, 1.0),
+        "min_combo_pair_citations": max(1.0, float(min_combo_pair_citations)),
+        "min_combo_pair_support_direction": clamp(min_combo_pair_support_direction, -1.0, 1.0),
+        "min_combo_cooccurrence_for_supported": max(1.0, float(min_combo_cooccurrence_for_supported)),
+        "min_combo_unique_exposure_events_for_supported": max(
+            1.0, float(min_combo_unique_exposure_events_for_supported)
+        ),
+        "min_temporal_lift": max(0.5, float(min_temporal_lift)),
+        "min_combo_temporal_lift": max(0.5, float(min_combo_temporal_lift)),
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2))
@@ -487,6 +581,14 @@ def get_decision_thresholds(path: Path = DEFAULT_THRESHOLDS_PATH) -> dict[str, f
         "min_unique_exposure_events_for_supported": 2.0,
         "single_exposure_override_min_evidence_strength": 0.92,
         "single_exposure_override_min_citations": 4.0,
+        "min_combo_item_citations": 1.0,
+        "min_combo_item_support_direction": 0.10,
+        "min_combo_pair_citations": 1.0,
+        "min_combo_pair_support_direction": 0.10,
+        "min_combo_cooccurrence_for_supported": 3.0,
+        "min_combo_unique_exposure_events_for_supported": 2.0,
+        "min_temporal_lift": 1.05,
+        "min_combo_temporal_lift": 1.10,
     }
     if not path.exists():
         return defaults
@@ -540,6 +642,58 @@ def get_decision_thresholds(path: Path = DEFAULT_THRESHOLDS_PATH) -> dict[str, f
             defaults["single_exposure_override_min_citations"],
         ),
     )
+    min_combo_item_citations = max(
+        1.0,
+        _safe_float(
+            payload.get("min_combo_item_citations"),
+            defaults["min_combo_item_citations"],
+        ),
+    )
+    min_combo_item_support_direction = clamp(
+        _safe_float(
+            payload.get("min_combo_item_support_direction"),
+            defaults["min_combo_item_support_direction"],
+        ),
+        -1.0,
+        1.0,
+    )
+    min_combo_pair_citations = max(
+        1.0,
+        _safe_float(
+            payload.get("min_combo_pair_citations"),
+            defaults["min_combo_pair_citations"],
+        ),
+    )
+    min_combo_pair_support_direction = clamp(
+        _safe_float(
+            payload.get("min_combo_pair_support_direction"),
+            defaults["min_combo_pair_support_direction"],
+        ),
+        -1.0,
+        1.0,
+    )
+    min_combo_cooccurrence_for_supported = max(
+        1.0,
+        _safe_float(
+            payload.get("min_combo_cooccurrence_for_supported"),
+            defaults["min_combo_cooccurrence_for_supported"],
+        ),
+    )
+    min_combo_unique_exposure_events_for_supported = max(
+        1.0,
+        _safe_float(
+            payload.get("min_combo_unique_exposure_events_for_supported"),
+            defaults["min_combo_unique_exposure_events_for_supported"],
+        ),
+    )
+    min_temporal_lift = max(
+        0.5,
+        _safe_float(payload.get("min_temporal_lift"), defaults["min_temporal_lift"]),
+    )
+    min_combo_temporal_lift = max(
+        0.5,
+        _safe_float(payload.get("min_combo_temporal_lift"), defaults["min_combo_temporal_lift"]),
+    )
     return {
         "min_evidence_strength": min_evidence_strength,
         "min_model_probability": min_model_probability,
@@ -549,6 +703,14 @@ def get_decision_thresholds(path: Path = DEFAULT_THRESHOLDS_PATH) -> dict[str, f
         "min_unique_exposure_events_for_supported": min_unique_exposure_events_for_supported,
         "single_exposure_override_min_evidence_strength": single_exposure_override_min_evidence_strength,
         "single_exposure_override_min_citations": single_exposure_override_min_citations,
+        "min_combo_item_citations": min_combo_item_citations,
+        "min_combo_item_support_direction": min_combo_item_support_direction,
+        "min_combo_pair_citations": min_combo_pair_citations,
+        "min_combo_pair_support_direction": min_combo_pair_support_direction,
+        "min_combo_cooccurrence_for_supported": min_combo_cooccurrence_for_supported,
+        "min_combo_unique_exposure_events_for_supported": min_combo_unique_exposure_events_for_supported,
+        "min_temporal_lift": min_temporal_lift,
+        "min_combo_temporal_lift": min_combo_temporal_lift,
     }
 
 

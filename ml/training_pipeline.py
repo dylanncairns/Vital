@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 from pathlib import Path
 from hashlib import sha256
+import json
 
 from api.db import get_connection, initialize_database
 from ml.evaluator import (
@@ -39,6 +41,7 @@ from ml.training_data import build_case_control_training_rows
 from sklearn.model_selection import GroupShuffleSplit
 from sklearn.model_selection import train_test_split
 
+DEFAULT_USER_EVAL_REPORT_PATH = default_model_path().parent / "user_timeline_eval_report.json"
 
 def _stable_jitter(key: str, *, amplitude: float) -> float:
     digest = sha256(key.encode("utf-8")).digest()
@@ -49,6 +52,57 @@ def _stable_jitter(key: str, *, amplitude: float) -> float:
 
 def _clamp01(value: float) -> float:
     return max(0.0, min(1.0, float(value)))
+
+
+def _binary_metrics(probabilities: list[float], labels: list[int], threshold: float) -> dict[str, float]:
+    if not probabilities or not labels or len(probabilities) != len(labels):
+        return {"count": 0.0, "precision": 0.0, "recall": 0.0}
+    tp = fp = fn = 0
+    for p, y in zip(probabilities, labels):
+        pred = 1 if float(p) >= float(threshold) else 0
+        true = 1 if int(y) == 1 else 0
+        if pred == 1 and true == 1:
+            tp += 1
+        elif pred == 1 and true == 0:
+            fp += 1
+        elif pred == 0 and true == 1:
+            fn += 1
+    precision = float(tp / max(1, tp + fp))
+    recall = float(tp / max(1, tp + fn))
+    return {"count": float(len(labels)), "precision": precision, "recall": recall}
+
+
+def _apply_slight_personal_reweight(
+    *,
+    x: list[list[float]],
+    y: list[int],
+    groups: list[int],
+    sources: list[str],
+) -> tuple[list[list[float]], list[int], list[int], list[str]]:
+    # Slightly bias hybrid training toward user-timeline signal while staying conservative.
+    if not x:
+        return x, y, groups, sources
+    out_x = list(x)
+    out_y = list(y)
+    out_groups = list(groups)
+    out_sources = list(sources)
+    for idx, source in enumerate(sources):
+        source_norm = str(source or "").strip().lower()
+        if source_norm == "feedback":
+            # +20% effective weight (deterministic)
+            if idx % 5 == 0:
+                out_x.append(x[idx])
+                out_y.append(y[idx])
+                out_groups.append(groups[idx] if idx < len(groups) else -3)
+                out_sources.append(source)
+        elif source_norm == "timeline_case_control":
+            # +15% effective weight (deterministic)
+            if idx % 7 == 0:
+                out_x.append(x[idx])
+                out_y.append(y[idx])
+                out_groups.append(groups[idx] if idx < len(groups) else -4)
+                out_sources.append(source)
+    return out_x, out_y, out_groups, out_sources
 
 
 def _augment_fusion_rows(
@@ -107,16 +161,25 @@ def run_training(
     x: list[list[float]] = []
     y: list[int] = []
     groups: list[int] = []
+    sources: list[str] = []
 
-    def _append_rows(rows: list[list[float]], labels: list[int], group_id: int | None = None) -> None:
+    def _append_rows(
+        rows: list[list[float]],
+        labels: list[int],
+        group_id: int | None = None,
+        source: str = "unknown",
+    ) -> None:
         x.extend(rows)
         y.extend(labels)
         if group_id is not None:
             groups.extend([group_id] * len(rows))
+        else:
+            groups.extend([-9] * len(rows))
+        sources.extend([source] * len(rows))
 
     if dataset_source in {"curated", "hybrid"}:
         curated_x, curated_y = build_training_rows_from_curated_catalog(Path(curated_path))
-        _append_rows(curated_x, curated_y, group_id=-1)
+        _append_rows(curated_x, curated_y, group_id=-1, source="curated")
 
     if dataset_source in {"insights", "hybrid"}:
         conn = get_connection()
@@ -124,7 +187,7 @@ def run_training(
             insights_x, insights_y = build_training_rows_from_insights(conn)
         finally:
             conn.close()
-        _append_rows(insights_x, insights_y, group_id=-2)
+        _append_rows(insights_x, insights_y, group_id=-2, source="insights")
 
     if dataset_source in {"feedback", "hybrid"}:
         conn = get_connection()
@@ -135,6 +198,7 @@ def run_training(
         x.extend(feedback_x)
         y.extend(feedback_y)
         groups.extend(feedback_groups)
+        sources.extend(["feedback"] * len(feedback_x))
 
     if dataset_source in {"timeline_case_control", "hybrid"}:
         conn = get_connection()
@@ -150,6 +214,15 @@ def run_training(
         x.extend(timeline_x)
         y.extend(timeline_y)
         groups.extend(timeline_groups)
+        sources.extend(["timeline_case_control"] * len(timeline_x))
+
+    if dataset_source == "hybrid":
+        x, y, groups, sources = _apply_slight_personal_reweight(
+            x=x,
+            y=y,
+            groups=groups,
+            sources=sources,
+        )
 
     if len(x) < 10:
         raise RuntimeError("Not enough training rows. Run insight recomputation first.")
@@ -193,6 +266,7 @@ def run_training(
         train_idx = list(range(len(x)))
 
     tuned_model_threshold: float | None = None
+    per_user_eval: dict[str, dict[str, float]] = {}
     if train_xgboost:
         val_probs: list[float] = []
         val_labels: list[int] = []
@@ -219,6 +293,29 @@ def run_training(
             val_labels,
             target_precision=max(0.5, min(0.99, float(target_precision))),
         )
+        eval_threshold = float(tuned_model_threshold or 0.5)
+        # Internal-only per-user validation reporting (not shown in UI).
+        per_user_probs: dict[int, list[float]] = {}
+        per_user_labels: dict[int, list[int]] = {}
+        for offset, idx in enumerate(val_idx):
+            if idx >= len(groups):
+                continue
+            user_group = int(groups[idx])
+            if user_group <= 0:
+                continue
+            per_user_probs.setdefault(user_group, []).append(float(calibrated_probs[offset]))
+            per_user_labels.setdefault(user_group, []).append(int(val_labels[offset]))
+        for user_id in sorted(per_user_probs.keys()):
+            metrics = _binary_metrics(
+                per_user_probs[user_id],
+                per_user_labels.get(user_id, []),
+                threshold=eval_threshold,
+            )
+            metrics["avg_probability"] = (
+                sum(per_user_probs[user_id]) / max(1, len(per_user_probs[user_id]))
+            )
+            per_user_eval[str(user_id)] = metrics
+
         save_decision_thresholds(
             min_evidence_strength=0.2,
             min_model_probability=tuned_model_threshold,
@@ -227,6 +324,14 @@ def run_training(
             source=str(dataset_source),
             path=DEFAULT_THRESHOLDS_PATH,
         )
+        report_payload = {
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "dataset_source": str(dataset_source),
+            "threshold_used": eval_threshold,
+            "users_in_validation": len(per_user_eval),
+            "per_user": per_user_eval,
+        }
+        DEFAULT_USER_EVAL_REPORT_PATH.write_text(json.dumps(report_payload, indent=2))
 
     fusion_rows: list[dict[str, float]] = []
     for idx, feature_values in enumerate(x):
@@ -283,6 +388,7 @@ def run_training(
             promoted=promote_fusion,
             reason=fusion_reason,
             dataset_source=str(dataset_source),
+            model_path=output_path,
         )
 
     return {
@@ -308,6 +414,7 @@ def run_training(
         "train_xgboost": bool(train_xgboost),
         "train_fusion": bool(train_fusion),
         "tuned_model_threshold": tuned_model_threshold,
+        "per_user_eval_users": len(per_user_eval),
     }
 
 

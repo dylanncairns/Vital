@@ -52,7 +52,7 @@ export default function AuthScreen() {
           <TextInput
             value={name}
             onChangeText={setName}
-            placeholder="Display name (optional)"
+            placeholder="Preferred first name (optional)"
             style={{ borderWidth: 1, borderColor: "#D6DCEB", borderRadius: 10, padding: 12, backgroundColor: "#FFF" }}
           />
         ) : null}
@@ -98,4 +98,3 @@ export default function AuthScreen() {
     </SafeAreaView>
   );
 }
-

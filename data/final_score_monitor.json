@@ -1,17 +1,88 @@
 {
-  "created_at": "2026-02-14T02:32:38.950523+00:00",
+  "created_at": "2026-02-14T09:02:17.137796+00:00",
   "dataset_source": "hybrid",
+  "guardrails": {
+    "runtime_max_high_conf_ratio": 0.9,
+    "runtime_max_mean_probability": 0.88,
+    "runtime_min_guardrail_negatives": 20.0,
+    "runtime_min_guardrail_positives": 20.0,
+    "runtime_min_guardrail_rows": 100.0,
+    "runtime_min_std_probability": 0.03,
+    "runtime_min_window": 120.0
+  },
+  "history": [
+    {
+      "created_at": "2026-02-14T08:30:39.580892+00:00",
+      "dataset_source": "hybrid",
+      "metrics": {
+        "auc": 0.9961565338923829,
+        "average_precision": 0.9967570754716981,
+        "brier": 0.013400854884209251,
+        "high_conf_ratio": 0.48598130841121495,
+        "mean_probability": 0.49002321915816105,
+        "negatives": 54.0,
+        "positives": 53.0,
+        "rows": 107.0,
+        "std_probability": 0.48718799780576233
+      },
+      "promoted": true,
+      "reason": "promote_passed_guardrails"
+    },
+    {
+      "created_at": "2026-02-14T09:02:17.137796+00:00",
+      "dataset_source": "hybrid",
+      "metrics": {
+        "auc": 1.0,
+        "average_precision": 0.9999999999999998,
+        "brier": 0.0054622595498336505,
+        "high_conf_ratio": 0.4921875,
+        "mean_probability": 0.4927524011988609,
+        "negatives": 65.0,
+        "positives": 63.0,
+        "rows": 128.0,
+        "std_probability": 0.48842900201148715
+      },
+      "promoted": true,
+      "reason": "promote_passed_guardrails"
+    }
+  ],
   "metrics": {
     "auc": 1.0,
-    "average_precision": 1.0,
-    "brier": 0.0004954309278519741,
-    "high_conf_ratio": 0.6730769230769231,
-    "mean_probability": 0.6630497720085832,
-    "negatives": 17.0,
-    "positives": 35.0,
-    "rows": 52.0,
-    "std_probability": 0.4531279896804243
+    "average_precision": 0.9999999999999998,
+    "brier": 0.0054622595498336505,
+    "high_conf_ratio": 0.4921875,
+    "mean_probability": 0.4927524011988609,
+    "negatives": 65.0,
+    "positives": 63.0,
+    "rows": 128.0,
+    "std_probability": 0.48842900201148715
   },
   "promoted": true,
-  "reason": "promote_previous_not_usable"
+  "reason": "promote_passed_guardrails",
+  "versions": {
+    "decision_thresholds": {
+      "exists": true,
+      "mtime": "2026-02-14T09:02:02.732280+00:00",
+      "sha256": "f07236a9c1163721d6a4d67d65ded11b793716ee296b75deccebb1fd86e760b5",
+      "size_bytes": 772
+    },
+    "fusion_calibrator": {
+      "exists": true,
+      "mtime": "2026-02-14T09:02:17.089759+00:00",
+      "sha256": "54e69113fad74a426c1f257b0413096e49ef4211f688103a2e96754e68b74cc4",
+      "size_bytes": 714
+    },
+    "fusion_model": {
+      "exists": true,
+      "mtime": "2026-02-14T09:02:01.919226+00:00",
+      "sha256": "2990957c45fa3ff8dfb2aeb4ec0c897dd5fab12922a967f05e26841c4f6fbb08",
+      "size_bytes": 28159
+    },
+    "score_guardrails": {
+      "exists": true,
+      "mtime": "2026-02-14T04:48:12.042803+00:00",
+      "sha256": "8a008a3336f6a00b9a2688c421a7edf3385fa4dea157aad6f453b797a99f1438",
+      "size_bytes": 268
+    }
+  }
 }

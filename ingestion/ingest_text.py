@@ -70,6 +70,13 @@ _DAYS_AGO_RE = re.compile(
 _SYMPTOM_CUES_RE = re.compile(r"\b(felt|feel|tired|ache|pain|nausea|headache|stomachache)\b", re.I)
 _HAD_OBJECT_RE = re.compile(r"\bhad\s+(?:a|an|some|the)?\s*[a-z]", re.I)
 _MEAL_CONTEXT_RE = re.compile(r"\b(breakfast|lunch|dinner|ate|eaten|drank|drink)\b", re.I)
+_LIFESTYLE_EXPOSURE_RE = re.compile(
+    r"\b("
+    r"poor sleep|bad sleep|no sleep|sleep deprivation|sleep deprived|insufficient sleep|"
+    r"long shift|overnight shift|jet lag|high stress|stressed|overworked|work stress"
+    r")\b",
+    re.I,
+)
 _DATE_TOKEN_RE = re.compile(
     r"\b("
     r"\d{4}-\d{2}-\d{2}|"
@@ -102,6 +109,12 @@ _LOW_SIGNAL_TOKENS = {
     "after",
     "before",
     "during",
+    "while",
+    "because",
+    "since",
+    "later",
+    "earlier",
+    "once",
 }
 _COMMON_SYMPTOM_TERMS_RE = re.compile(
     r"\b("
@@ -122,6 +135,55 @@ _ABS_MONTH_DATE_RE = re.compile(
     r")\b",
     re.I,
 )
+_ANAPHORIC_DAYPART_RE = re.compile(r"\bthat\s+(morning|afternoon|evening|night|day)\b", re.I)
+
+
+def _apply_daypart_to_base(base: datetime, daypart: str) -> datetime:
+    token = daypart.lower().strip()
+    if token == "morning":
+        return base.replace(hour=9, minute=0, second=0, microsecond=0)
+    if token == "afternoon":
+        return base.replace(hour=15, minute=0, second=0, microsecond=0)
+    if token == "evening":
+        return base.replace(hour=19, minute=0, second=0, microsecond=0)
+    if token == "night":
+        return base.replace(hour=22, minute=0, second=0, microsecond=0)
+    return base.replace(hour=12, minute=0, second=0, microsecond=0)
+
+
+def _context_anchor_iso(
+    *,
+    context_timestamp: str | None,
+    context_start: str | None,
+    context_end: str | None,
+) -> str | None:
+    return context_timestamp or context_start or context_end
+
+
+def _resolve_anaphoric_daypart_time(
+    text: str,
+    *,
+    context_timestamp: str | None,
+    context_start: str | None,
+    context_end: str | None,
+) -> str | None:
+    match = _ANAPHORIC_DAYPART_RE.search(text)
+    if not match:
+        return None
+    anchor_iso = _context_anchor_iso(
+        context_timestamp=context_timestamp,
+        context_start=context_start,
+        context_end=context_end,
+    )
+    if not anchor_iso:
+        return None
+    try:
+        anchor = datetime.fromisoformat(anchor_iso.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    anchor_local = anchor.astimezone(_LOCAL_TZ)
+    resolved_local = _apply_daypart_to_base(anchor_local, match.group(1))
+    return resolved_local.astimezone(timezone.utc).isoformat()
 
 
 def _parse_days_ago(text: str) -> int | None:
@@ -376,6 +438,8 @@ def _guess_event_type(text: str) -> str:
 
 def _infer_route(text: str) -> str:
     t = text.lower()
+    if _LIFESTYLE_EXPOSURE_RE.search(t):
+        return "behavioral"
     if re.search(r"\b(near|nearby|around|exposed|exposure|environment|air quality|pollution|pollen|dust|mold|secondhand|second hand|passive smoke)\b", t):
         return "proximity_environment"
     if re.search(r"\b(went\s+to|visited|was\s+at|club|party|bar|concert|festival|crowd)\b", t):
@@ -408,10 +472,11 @@ def _split_exposure_items(text: str) -> list[str]:
             # Fallback for noun lists without explicit verbs (e.g., "chicken and rice").
             segment = lower
         segment = re.split(
-            r"\b(today|yesterday|last night|this morning|this afternoon|this evening|breakfast|lunch|dinner|this breakfast|this lunch|this dinner|yesterday breakfast|yesterday lunch|yesterday dinner)\b",
+            r"\b(today|yesterday|last night|this morning|this afternoon|this evening|morning|afternoon|evening|night|breakfast|lunch|dinner|this breakfast|this lunch|this dinner|yesterday breakfast|yesterday lunch|yesterday dinner)\b",
             segment,
             maxsplit=1,
         )[0]
+        segment = _DATE_TOKEN_RE.sub(" ", segment)
         segment = re.sub(r"\b(?:i|we)\s+(?:had|have|having)\b", " and ", segment)
         segment = re.split(r"\b(felt|feel)\b", segment, maxsplit=1)[0]
         parts = re.split(r"\s*(?:,|&|\band\b|\bwith\b)\s*", segment)
@@ -428,10 +493,11 @@ def _split_exposure_items(text: str) -> list[str]:
     segment = re.sub(r"\b(?:i|we)\s+(?:had|have|having)\b", " and ", segment)
     segment = re.split(r"\b(at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\b", segment, maxsplit=1)[0]
     segment = re.split(
-        r"\b(today|yesterday|last night|this morning|this afternoon|this evening|breakfast|lunch|dinner|this breakfast|this lunch|this dinner|yesterday breakfast|yesterday lunch|yesterday dinner)\b",
+        r"\b(today|yesterday|last night|this morning|this afternoon|this evening|morning|afternoon|evening|night|breakfast|lunch|dinner|this breakfast|this lunch|this dinner|yesterday breakfast|yesterday lunch|yesterday dinner)\b",
         segment,
         maxsplit=1,
     )[0]
+    segment = _DATE_TOKEN_RE.sub(" ", segment)
     segment = re.split(r"\b(felt|feel)\b", segment, maxsplit=1)[0]
     parts = re.split(r"\s*(?:,|&|\band\b|\bwith\b)\s*", segment)
     out: list[str] = []
@@ -459,7 +525,14 @@ def _clean_candidate_text(text: str) -> str:
     value = re.sub(r"\b\d{1,2}\s*-\s*\d{1,2}\b", " ", value)
     value = _TIME_AT_RE.sub(" ", value)
     value = _RELATIVE_RE.sub(" ", value)
-    value = re.sub(r"\b(i|we|also|then|so|when|and|at|about|this|that|in|for|on|to|of|from|by|went|visit|visited|did|do|done|after|before|during|got|my)\b", " ", value)
+    value = _DATE_TOKEN_RE.sub(" ", value)
+    value = re.sub(
+        r"\b(?:jan|january|feb|february|mar|march|apr|april|may|jun|june|jul|july|aug|august|sep|sept|september|oct|october|nov|november|dec|december)\b",
+        " ",
+        value,
+    )
+    value = re.sub(r"\b\d{1,2}(?:st|nd|rd|th)?\b", " ", value)
+    value = re.sub(r"\b(i|we|also|then|so|when|and|at|about|this|that|in|for|on|to|of|from|by|went|visit|visited|did|do|done|after|before|during|while|because|since|got|my)\b", " ", value)
     value = re.sub(r"\b(was|were|is|am|been|being)\b", " ", value)
     value = re.sub(r"\b(ate|eaten|drank|drink|used|apply|applied|took|take|smoked|felt|feel|had|have|having)\b", " ", value)
     value = re.sub(r"\b(morning|afternoon|evening|night|breakfast|lunch|dinner)\b", " ", value)
@@ -475,6 +548,13 @@ def _clean_candidate_text(text: str) -> str:
     value = re.sub(r"^(also|just|new)\s+", "", value)
     # Drop conversational trailing particles.
     value = re.sub(r"\s+(a|an|the)$", "", value)
+    # Remove leading/trailing low-signal tokens repeatedly.
+    tokens = [tok for tok in value.split(" ") if tok]
+    while tokens and tokens[0] in _LOW_SIGNAL_TOKENS:
+        tokens.pop(0)
+    while tokens and tokens[-1] in _LOW_SIGNAL_TOKENS:
+        tokens.pop()
+    value = " ".join(tokens).strip(" ,.;")
     value = re.sub(r"\s+", " ", value).strip(" ,.;")
     return value
 
@@ -635,8 +715,60 @@ def _split_into_segments(text: str) -> list[str]:
         cleaned = segment.strip()
         if len(cleaned) < 3:
             continue
-        segments.append(cleaned)
+        parts = re.split(
+            r"\s*(?:,\s*)?(?:and then|then|after that|afterwards|later)\s+",
+            cleaned,
+            flags=re.I,
+        )
+        for part in parts:
+            part_clean = part.strip(" ,")
+            if len(part_clean) >= 3:
+                segments.append(part_clean)
     return segments
+
+
+def _has_time_info(parsed: ParsedEvent) -> bool:
+    return bool(parsed.timestamp or parsed.time_range_start or parsed.time_range_end)
+
+
+def _apply_time_context(
+    parsed: ParsedEvent,
+    *,
+    context_timestamp: str | None,
+    context_start: str | None,
+    context_end: str | None,
+) -> ParsedEvent:
+    if _has_time_info(parsed):
+        return parsed
+    if not any([context_timestamp, context_start, context_end]):
+        return parsed
+    return ParsedEvent(
+        event_type=parsed.event_type,
+        timestamp=context_timestamp,
+        time_range_start=context_start,
+        time_range_end=context_end,
+        time_confidence="approx",
+        item_id=parsed.item_id,
+        route=parsed.route,
+        symptom_id=parsed.symptom_id,
+        severity=parsed.severity,
+        source_text=parsed.source_text,
+    )
+
+
+def _override_parsed_timestamp(parsed: ParsedEvent, timestamp: str) -> ParsedEvent:
+    return ParsedEvent(
+        event_type=parsed.event_type,
+        timestamp=timestamp,
+        time_range_start=None,
+        time_range_end=None,
+        time_confidence="approx",
+        item_id=parsed.item_id,
+        route=parsed.route,
+        symptom_id=parsed.symptom_id,
+        severity=parsed.severity,
+        source_text=parsed.source_text,
+    )
 
 
 def parse_text_events(text: str) -> list[ParsedEvent]:
@@ -649,6 +781,9 @@ def parse_text_events(text: str) -> list[ParsedEvent]:
         segments = [text.strip()]
     parsed_events: list[ParsedEvent] = []
     seen_keys: set[tuple[str, str | None, str | None, str | None, int | None, int | None, str | None]] = set()
+    last_context_timestamp: str | None = None
+    last_context_start: str | None = None
+    last_context_end: str | None = None
 
     def _append_if_new(parsed: ParsedEvent) -> None:
         key = (
@@ -666,22 +801,45 @@ def parse_text_events(text: str) -> list[ParsedEvent]:
         parsed_events.append(parsed)
 
     for segment in segments:
+        seg_ts, seg_start, seg_end = _parse_time(segment)
+        anaphoric_seg_ts = _resolve_anaphoric_daypart_time(
+            segment,
+            context_timestamp=last_context_timestamp,
+            context_start=last_context_start,
+            context_end=last_context_end,
+        )
+        if anaphoric_seg_ts is not None:
+            seg_ts, seg_start, seg_end = anaphoric_seg_ts, None, None
+        if any([seg_ts, seg_start, seg_end]):
+            last_context_timestamp, last_context_start, last_context_end = seg_ts, seg_start, seg_end
         parsed = parse_text_event(segment)
         segment_lower = segment.lower()
         has_multi_exposure_clause = re.search(
             r"\band\s+for\s+(?:breakfast|lunch|dinner)\b",
             segment_lower,
         ) is not None
+        has_multiple_exposure_mentions = (
+            len(re.findall(r"\b(ate|eaten|drank|drink|took|take|smoked|used|apply|applied|had|have|having)\b", segment_lower))
+            >= 2
+        )
         has_mixed_signal = (
             _EXPOSURE_VERBS.search(segment_lower) is not None
             and (_SYMPTOM_CUES_RE.search(segment_lower) is not None or _COMMON_SYMPTOM_TERMS_RE.search(segment_lower) is not None)
         )
 
         if parsed is not None:
+            if anaphoric_seg_ts is not None:
+                parsed = _override_parsed_timestamp(parsed, anaphoric_seg_ts)
+            parsed = _apply_time_context(
+                parsed,
+                context_timestamp=seg_ts or last_context_timestamp,
+                context_start=seg_start or last_context_start,
+                context_end=seg_end or last_context_end,
+            )
             # For multi-exposure clauses, prefer clause parsing over whole-segment parse to avoid blended artifacts.
-            if not has_multi_exposure_clause:
+            if not has_multi_exposure_clause and not has_multiple_exposure_mentions:
                 _append_if_new(parsed)
-            if not has_mixed_signal and not has_multi_exposure_clause:
+            if not has_mixed_signal and not has_multi_exposure_clause and not has_multiple_exposure_mentions:
                 continue
         # Fallback for mixed blurbs in one sentence: split into clause-like chunks.
         clauses = [
@@ -694,9 +852,30 @@ def parse_text_events(text: str) -> list[ParsedEvent]:
             if part.strip()
         ]
         for clause in clauses:
+            clause_ts, clause_start, clause_end = _parse_time(clause)
+            anaphoric_clause_ts = _resolve_anaphoric_daypart_time(
+                clause,
+                context_timestamp=seg_ts or last_context_timestamp,
+                context_start=seg_start or last_context_start,
+                context_end=seg_end or last_context_end,
+            )
+            if anaphoric_clause_ts is not None:
+                clause_ts, clause_start, clause_end = anaphoric_clause_ts, None, None
             clause_parsed = parse_text_event(clause)
             if clause_parsed is not None:
+                if anaphoric_clause_ts is not None:
+                    clause_parsed = _override_parsed_timestamp(clause_parsed, anaphoric_clause_ts)
+                clause_parsed = _apply_time_context(
+                    clause_parsed,
+                    context_timestamp=clause_ts or seg_ts or last_context_timestamp,
+                    context_start=clause_start or seg_start or last_context_start,
+                    context_end=clause_end or seg_end or last_context_end,
+                )
                 _append_if_new(clause_parsed)
+                if _has_time_info(clause_parsed):
+                    last_context_timestamp = clause_parsed.timestamp
+                    last_context_start = clause_parsed.time_range_start
+                    last_context_end = clause_parsed.time_range_end
     return parsed_events
 
 
@@ -808,7 +987,7 @@ def parse_with_api_events(text: str) -> list[ParsedEvent]:
                             "candidate": {"type": ["string", "null"]},
                             "route": {
                                 "type": ["string", "null"],
-                                "enum": [None, "ingestion", "dermal", "inhalation", "injection", "proximity_environment", "other"],
+                                "enum": [None, "ingestion", "dermal", "inhalation", "injection", "proximity_environment", "behavioral", "other"],
                             },
                             "severity": {"type": ["integer", "null"]},
                             "time_confidence": {"type": ["string", "null"], "enum": [None, "exact", "approx", "backfilled"]},
@@ -1077,12 +1256,16 @@ def parse_with_rules(text: str) -> ParsedEvent | None:
         if not candidate:
             return None
         item_id = resolve_item_id(candidate)
+        if item_id is None:
+            return None
         route = _infer_route(text)
     else:
         candidate = _normalize_symptom_candidate(cleaned_tokens[0]) if cleaned_tokens else ""
         if not candidate or not _is_valid_symptom_candidate(candidate, text):
             return None
         symptom_id = resolve_symptom_id(candidate)
+        if symptom_id is None:
+            return None
         route = None
 
     return ParsedEvent(

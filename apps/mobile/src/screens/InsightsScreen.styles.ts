@@ -13,11 +13,16 @@ export const styles = StyleSheet.create({
   header: {
     paddingTop: 14,
     paddingBottom: 10,
+    alignItems: "center",
+    justifyContent: "center",
+    position: "relative",
+    minHeight: 44,
   },
   headerTitle: {
     fontSize: 28,
     fontFamily: "Exo2-Bold",
     color: "#101426",
+    textAlign: "center",
   },
   card: {
     backgroundColor: "#FFFFFF",

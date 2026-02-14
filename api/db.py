@@ -225,6 +225,7 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
         _migration_009_auth,
         _migration_010_insight_rejections,
         _migration_011_insight_source_ingredient,
+        _migration_012_combo_candidates,
     ]
     for migration in migrations:
         migration(conn)
@@ -418,6 +419,54 @@ def _migration_010_insight_rejections(conn: sqlite3.Connection) -> None:
 def _migration_011_insight_source_ingredient(conn: sqlite3.Connection) -> None:
     if not _column_exists(conn, "insights", "source_ingredient_id"):
         conn.execute("ALTER TABLE insights ADD COLUMN source_ingredient_id INTEGER")
+
+
+def _migration_012_combo_candidates(conn: sqlite3.Connection) -> None:
+    combo_columns = [
+        ("secondary_item_id", "INTEGER"),
+        ("is_combo", "INTEGER NOT NULL DEFAULT 0"),
+        ("combo_key", "TEXT"),
+        ("combo_item_ids_json", "TEXT"),
+    ]
+    for column_name, column_type in combo_columns:
+        if not _column_exists(conn, "insights", column_name):
+            conn.execute(f"ALTER TABLE insights ADD COLUMN {column_name} {column_type}")
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS derived_features_combos (
+            id INTEGER NOT NULL PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            combo_key TEXT NOT NULL,
+            item_ids_json TEXT NOT NULL,
+            symptom_id INTEGER NOT NULL,
+            time_gap_min_minutes REAL,
+            time_gap_avg_minutes REAL,
+            cooccurrence_count INTEGER,
+            cooccurrence_unique_symptom_count INTEGER,
+            pair_density REAL,
+            exposure_count_7d INTEGER,
+            symptom_count_7d INTEGER,
+            severity_avg_after REAL,
+            computed_at TEXT,
+            UNIQUE (user_id, combo_key, symptom_id),
+            FOREIGN KEY (user_id) REFERENCES users(id),
+            FOREIGN KEY (symptom_id) REFERENCES symptoms(id)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_derived_features_combos_user_symptom
+        ON derived_features_combos(user_id, symptom_id)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_insights_combo_lookup
+        ON insights(user_id, is_combo, combo_key, symptom_id)
+        """
+    )
 
 def initialize_database():
     db_exists = DB_PATH.exists()

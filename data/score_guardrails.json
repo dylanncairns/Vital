@@ -1,0 +1,9 @@
+{
+  "runtime_min_window": 120,
+  "runtime_max_high_conf_ratio": 0.9,
+  "runtime_max_mean_probability": 0.88,
+  "runtime_min_std_probability": 0.03,
+  "runtime_min_guardrail_rows": 100,
+  "runtime_min_guardrail_positives": 20,
+  "runtime_min_guardrail_negatives": 20
+}
