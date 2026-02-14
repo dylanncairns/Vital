@@ -1,35 +1,37 @@
 import { StyleSheet } from "react-native";
 
+const TEXT_SOFT_DARK = "#101426";
+
 export const styles = StyleSheet.create({
   safe: {
     flex: 1,
-    backgroundColor: "#0E0E12",
+    backgroundColor: "#F7F8FB",
   },
   container: {
     padding: 20,
     paddingBottom: 40,
-    backgroundColor: "#0E0E12",
+    backgroundColor: "#F7F8FB",
   },
   header: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginBottom: 20,
+    paddingTop: 14,
+    paddingBottom: 10,
   },
   headerTitle: {
-    color: "#E6E6E8",
-    fontSize: 24,
-    fontWeight: "700",
+    color: TEXT_SOFT_DARK,
+    fontSize: 28,
+    fontFamily: "Exo2-Bold",
   },
   headerLine: {
     flex: 1,
     height: 1,
-    backgroundColor: "#2A2A32",
+    backgroundColor: "#E2E7F1",
     marginHorizontal: 12,
   },
   headerDate: {
-    color: "#8A8A9A",
+    color: TEXT_SOFT_DARK,
     fontSize: 12,
     letterSpacing: 1,
+    fontFamily: "Exo2-Regular",
   },
   dateBreakRow: {
     flexDirection: "row",
@@ -40,14 +42,15 @@ export const styles = StyleSheet.create({
   dateBreakLine: {
     flex: 1,
     height: 1,
-    backgroundColor: "#2A2A32",
+    backgroundColor: "#E2E7F1",
     marginRight: 10,
   },
   dateBreakText: {
-    color: "#A1A1B0",
+    color: TEXT_SOFT_DARK,
     fontSize: 11,
     letterSpacing: 0.8,
     textTransform: "uppercase",
+    fontFamily: "Exo2-Regular",
   },
   row: {
     flexDirection: "row",
@@ -66,7 +69,7 @@ export const styles = StyleSheet.create({
     top: -12,
     bottom: -12,
     width: 2,
-    backgroundColor: "#2A2A32",
+    backgroundColor: "#E2E7F1",
   },
   nodeWrap: {
     position: "absolute",
@@ -83,34 +86,37 @@ export const styles = StyleSheet.create({
   branch: {
     width: 12,
     height: 2,
-    backgroundColor: "#2A2A32",
+    backgroundColor: "#E2E7F1",
   },
   card: {
     flex: 1,
-    backgroundColor: "#1A1A22",
+    backgroundColor: "#FFFFFF",
     borderRadius: 16,
     padding: 16,
     borderWidth: 1,
-    borderColor: "#2A2A32",
+    borderColor: "#E2E7F1",
   },
   timeText: {
-    color: "#A0A0B2",
+    color: TEXT_SOFT_DARK,
     fontSize: 12,
     marginBottom: 6,
+    fontFamily: "Exo2-Regular",
   },
   titleText: {
-    color: "#F0F0F5",
+    color: TEXT_SOFT_DARK,
     fontSize: 16,
-    fontWeight: "700",
+    fontFamily: "Exo2-Bold",
     marginBottom: 6,
   },
   bodyText: {
-    color: "#B6B6C6",
+    color: TEXT_SOFT_DARK,
     fontSize: 13,
     marginBottom: 6,
+    fontFamily: "Exo2-Regular",
   },
   metaText: {
-    color: "#7E7E92",
+    color: TEXT_SOFT_DARK,
     fontSize: 11,
+    fontFamily: "Exo2-Regular",
   },
 });

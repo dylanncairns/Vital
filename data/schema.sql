@@ -39,8 +39,22 @@ CREATE TABLE papers (
 CREATE TABLE users (
     id INTEGER NOT NULL PRIMARY KEY,
     created_at TEXT,
-    name TEXT
+    name TEXT,
+    username TEXT,
+    password_hash TEXT
 );
+CREATE UNIQUE INDEX idx_users_username_unique ON users(username);
+CREATE TABLE auth_sessions (
+    id INTEGER NOT NULL PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    token TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    revoked_at TEXT,
+    FOREIGN KEY (user_id) REFERENCES users(id)
+);
+CREATE INDEX idx_auth_sessions_user ON auth_sessions(user_id);
+CREATE INDEX idx_auth_sessions_token ON auth_sessions(token);
 CREATE TABLE exposure_events (
     id INTEGER NOT NULL PRIMARY KEY,
     user_id INTEGER NOT NULL,
@@ -166,6 +180,7 @@ CREATE TABLE insights (
     id INTEGER NOT NULL PRIMARY KEY,
     user_id INTEGER NOT NULL,
     item_id INTEGER NOT NULL,
+    source_ingredient_id INTEGER,
     symptom_id INTEGER NOT NULL,
     model_score REAL,
     evidence_score REAL,
@@ -178,6 +193,32 @@ CREATE TABLE insights (
     display_decision_reason TEXT,
     citations_json TEXT,
     created_at TEXT,
+    FOREIGN KEY (user_id) REFERENCES users(id),
+    FOREIGN KEY (item_id) REFERENCES items(id),
+    FOREIGN KEY (source_ingredient_id) REFERENCES ingredients(id),
+    FOREIGN KEY (symptom_id) REFERENCES symptoms(id)
+);
+CREATE TABLE insight_event_links (
+    id INTEGER NOT NULL PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    insight_id INTEGER NOT NULL,
+    event_type TEXT NOT NULL CHECK (event_type IN ('exposure', 'symptom')),
+    event_id INTEGER NOT NULL,
+    created_at TEXT,
+    UNIQUE (insight_id, event_type, event_id),
+    FOREIGN KEY (user_id) REFERENCES users(id),
+    FOREIGN KEY (insight_id) REFERENCES insights(id) ON DELETE CASCADE
+);
+CREATE TABLE insight_verifications (
+    id INTEGER NOT NULL PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    item_id INTEGER NOT NULL,
+    symptom_id INTEGER NOT NULL,
+    verified INTEGER NOT NULL DEFAULT 1,
+    rejected INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT,
+    updated_at TEXT,
+    UNIQUE (user_id, item_id, symptom_id),
     FOREIGN KEY (user_id) REFERENCES users(id),
     FOREIGN KEY (item_id) REFERENCES items(id),
     FOREIGN KEY (symptom_id) REFERENCES symptoms(id)
@@ -201,8 +242,28 @@ CREATE TABLE model_retrain_state (
     last_enqueued_total_events INTEGER NOT NULL DEFAULT 0,
     updated_at TEXT
 );
+CREATE TABLE recurring_exposure_rules (
+    id INTEGER NOT NULL PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    item_id INTEGER NOT NULL,
+    route TEXT NOT NULL,
+    start_at TEXT NOT NULL,
+    interval_hours INTEGER NOT NULL,
+    time_confidence TEXT,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    last_generated_at TEXT,
+    notes TEXT,
+    created_at TEXT,
+    updated_at TEXT,
+    FOREIGN KEY (user_id) REFERENCES users(id),
+    FOREIGN KEY (item_id) REFERENCES items(id)
+);
 CREATE INDEX idx_claims_ingredient_symptom_paper ON claims(ingredient_id, symptom_id, paper_id);
 CREATE INDEX idx_claims_item_symptom_paper ON claims(item_id, symptom_id, paper_id);
+CREATE INDEX idx_insight_event_links_user_event ON insight_event_links(user_id, event_type, event_id);
+CREATE INDEX idx_insight_event_links_insight ON insight_event_links(insight_id);
+CREATE INDEX idx_insight_verifications_user ON insight_verifications(user_id);
 CREATE INDEX idx_retrieval_runs_user_item_symptom ON retrieval_runs(user_id, item_id, symptom_id);
+CREATE INDEX idx_recurring_rules_user_active ON recurring_exposure_rules(user_id, is_active);
 INSERT OR IGNORE INTO model_retrain_state (id, last_trained_total_events, last_enqueued_total_events, updated_at)
 VALUES (1, 0, 0, datetime('now'));

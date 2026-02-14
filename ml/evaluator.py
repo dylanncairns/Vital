@@ -14,6 +14,7 @@ try:
 except Exception:
     xgb = None
 from sklearn.isotonic import IsotonicRegression
+from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import precision_recall_curve
 
 from api.db import DB_PATH
@@ -123,10 +124,10 @@ def compute_evidence_quality(evidence: dict[str, Any]) -> dict[str, float]:
     risk_of_bias_sum = 0.0
     llm_confidence_sum = 0.0
     for citation in citations:
-        polarity = _safe_int(citation.get("evidence_polarity_and_strength"), 0)
-        if polarity > 0:
+        polarity = clamp(_safe_float(citation.get("evidence_polarity_and_strength"), 0.0), -1.0, 1.0)
+        if polarity > 0.15:
             support_count += 1
-        elif polarity < 0:
+        elif polarity < -0.15:
             contradict_count += 1
         else:
             neutral_count += 1
@@ -234,10 +235,13 @@ def train_xgboost_model(
         "eval_metric": "logloss",
         "eta": float(learning_rate),
         "max_depth": int(max_depth),
-        "subsample": 0.9,
-        "colsample_bytree": 0.9,
-        "lambda": 1.0,
-        "alpha": 0.0,
+        "subsample": 0.8,
+        "colsample_bytree": 0.8,
+        "lambda": 2.0,
+        "alpha": 0.5,
+        "min_child_weight": 3.0,
+        "gamma": 0.2,
+        "max_delta_step": 1.0,
         "seed": 42,
     }
     return xgb.train(params=params, dtrain=matrix, num_boost_round=max(1, int(rounds)))
@@ -297,21 +301,22 @@ def predict_model_probability(
     if len(preds) == 0:
         return 0.0
     raw = clamp(float(preds[0]), 0.0, 1.0)
-    if not use_calibration:
-        return raw
-    return apply_probability_calibrator(raw, calibrator_path=calibrator_path)
+    calibrated = raw if not use_calibration else apply_probability_calibrator(raw, calibrator_path=calibrator_path)
+    return _stabilize_personal_probability(calibrated, feature_map)
 
 
-def fit_probability_calibrator(raw_probabilities: list[float], labels: list[int]) -> IsotonicRegression:
+def fit_probability_calibrator(raw_probabilities: list[float], labels: list[int]) -> dict[str, Any]:
     if len(raw_probabilities) != len(labels) or not raw_probabilities:
         raise ValueError("Calibration data missing or mismatched")
-    calibrator = IsotonicRegression(out_of_bounds="clip", y_min=0.0, y_max=1.0)
-    calibrator.fit(raw_probabilities, labels)
-    return calibrator
+    x = [[clamp(float(p), 0.0, 1.0)] for p in raw_probabilities]
+    y = [1 if int(v) == 1 else 0 for v in labels]
+    calibrator = LogisticRegression(max_iter=1000, class_weight="balanced", solver="lbfgs")
+    calibrator.fit(x, y)
+    return {"type": "sigmoid", "model": calibrator}
 
 
 def save_probability_calibrator(
-    calibrator: IsotonicRegression,
+    calibrator: Any,
     *,
     path: Path = DEFAULT_CALIBRATOR_PATH,
 ) -> None:
@@ -340,10 +345,69 @@ def apply_probability_calibrator(probability: float, *, calibrator_path: Path = 
     calibrator = _load_probability_calibrator(calibrator_path)
     if calibrator is None:
         return clamp(probability, 0.0, 1.0)
-    calibrated = calibrator.predict([clamp(probability, 0.0, 1.0)])
+    p = clamp(probability, 0.0, 1.0)
+    probe = [0.15, 0.30, 0.50, 0.70, 0.85]
+    if isinstance(calibrator, dict) and calibrator.get("type") == "sigmoid":
+        model = calibrator.get("model")
+        try:
+            probe_preds = model.predict_proba([[v] for v in probe])[:, 1].tolist()
+            if probe_preds:
+                spread = max(probe_preds) - min(probe_preds)
+                if spread < 0.08:
+                    return p
+            calibrated = model.predict_proba([[p]])[:, 1]
+            if len(calibrated) > 0:
+                return clamp(float(calibrated[0]), 0.0, 1.0)
+        except Exception:
+            return p
+        return p
+    try:
+        probe_preds = [float(v) for v in calibrator.predict(probe)]
+        if probe_preds:
+            spread = max(probe_preds) - min(probe_preds)
+            if spread < 0.08:
+                return p
+    except Exception:
+        return p
+    calibrated = calibrator.predict([p])
     if len(calibrated) == 0:
-        return clamp(probability, 0.0, 1.0)
+        return p
     return clamp(float(calibrated[0]), 0.0, 1.0)
+
+
+def _stabilize_personal_probability(probability: float, feature_map: dict[str, float]) -> float:
+    cooccurrence = max(0.0, _safe_float(feature_map.get("cooccurrence_count"), 0.0))
+    recurrence_factor = clamp(cooccurrence / 4.0, 0.0, 1.0)
+    time_confidence = clamp(_safe_float(feature_map.get("time_confidence_score"), 0.0), 0.0, 1.0)
+    contradict_ratio = clamp(_safe_float(feature_map.get("contradict_ratio"), 0.0), 0.0, 1.0)
+    pair_density = max(0.0, _safe_float(feature_map.get("pair_density"), 0.0))
+    time_gap_min = max(0.0, _safe_float(feature_map.get("time_gap_min_minutes"), 0.0))
+    symptom_count_7d = max(0.0, _safe_float(feature_map.get("symptom_count_7d"), 0.0))
+
+    if time_gap_min <= 360.0:
+        lag_score = 1.0
+    elif time_gap_min <= 1440.0:
+        lag_score = 0.85
+    elif time_gap_min <= 4320.0:
+        lag_score = 0.60
+    else:
+        lag_score = 0.35
+
+    symptom_noise_penalty = clamp(symptom_count_7d / 10.0, 0.0, 0.40)
+    temporal_baseline = clamp(
+        0.60 * recurrence_factor
+        + 0.15 * lag_score
+        + 0.15 * time_confidence
+        + 0.10 * (1.0 - symptom_noise_penalty),
+        0.0,
+        1.0,
+    )
+
+    p = clamp(probability, 0.0, 1.0)
+    p = (0.35 * p) + (0.65 * temporal_baseline)
+    p *= 1.0 - (0.25 * contradict_ratio)
+    p *= 1.0 - clamp(max(0.0, pair_density - 1.0) * 0.05, 0.0, 0.20)
+    return clamp(p, 0.0, 1.0)
 
 
 def tune_model_threshold(
@@ -385,6 +449,11 @@ def save_decision_thresholds(
     min_evidence_strength: float,
     min_model_probability: float,
     min_overall_confidence: float,
+    min_cooccurrence_for_supported: float = 2.0,
+    min_support_direction: float = 0.10,
+    min_unique_exposure_events_for_supported: float = 2.0,
+    single_exposure_override_min_evidence_strength: float = 0.92,
+    single_exposure_override_min_citations: float = 4.0,
     target_precision: float,
     source: str,
     path: Path = DEFAULT_THRESHOLDS_PATH,
@@ -396,6 +465,13 @@ def save_decision_thresholds(
         "min_evidence_strength": clamp(min_evidence_strength, 0.0, 1.0),
         "min_model_probability": clamp(min_model_probability, 0.0, 1.0),
         "min_overall_confidence": clamp(min_overall_confidence, 0.0, 1.0),
+        "min_cooccurrence_for_supported": max(2.0, float(min_cooccurrence_for_supported)),
+        "min_support_direction": clamp(min_support_direction, -1.0, 1.0),
+        "min_unique_exposure_events_for_supported": max(1.0, float(min_unique_exposure_events_for_supported)),
+        "single_exposure_override_min_evidence_strength": clamp(
+            single_exposure_override_min_evidence_strength, 0.0, 1.0
+        ),
+        "single_exposure_override_min_citations": max(1.0, float(single_exposure_override_min_citations)),
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2))
@@ -406,6 +482,11 @@ def get_decision_thresholds(path: Path = DEFAULT_THRESHOLDS_PATH) -> dict[str, f
         "min_evidence_strength": 0.2,
         "min_model_probability": 0.35,
         "min_overall_confidence": 0.45,
+        "min_cooccurrence_for_supported": 2.0,
+        "min_support_direction": 0.10,
+        "min_unique_exposure_events_for_supported": 2.0,
+        "single_exposure_override_min_evidence_strength": 0.92,
+        "single_exposure_override_min_citations": 4.0,
     }
     if not path.exists():
         return defaults
@@ -428,10 +509,46 @@ def get_decision_thresholds(path: Path = DEFAULT_THRESHOLDS_PATH) -> dict[str, f
         0.0,
         max(0.0, min(1.0, DEFAULT_MAX_OVERALL_THRESHOLD)),
     )
+    min_cooccurrence_for_supported = max(
+        2.0,
+        _safe_float(payload.get("min_cooccurrence_for_supported"), defaults["min_cooccurrence_for_supported"]),
+    )
+    min_support_direction = clamp(
+        _safe_float(payload.get("min_support_direction"), defaults["min_support_direction"]),
+        -1.0,
+        1.0,
+    )
+    min_unique_exposure_events_for_supported = max(
+        1.0,
+        _safe_float(
+            payload.get("min_unique_exposure_events_for_supported"),
+            defaults["min_unique_exposure_events_for_supported"],
+        ),
+    )
+    single_exposure_override_min_evidence_strength = clamp(
+        _safe_float(
+            payload.get("single_exposure_override_min_evidence_strength"),
+            defaults["single_exposure_override_min_evidence_strength"],
+        ),
+        0.0,
+        1.0,
+    )
+    single_exposure_override_min_citations = max(
+        1.0,
+        _safe_float(
+            payload.get("single_exposure_override_min_citations"),
+            defaults["single_exposure_override_min_citations"],
+        ),
+    )
     return {
         "min_evidence_strength": min_evidence_strength,
         "min_model_probability": min_model_probability,
         "min_overall_confidence": min_overall_confidence,
+        "min_cooccurrence_for_supported": min_cooccurrence_for_supported,
+        "min_support_direction": min_support_direction,
+        "min_unique_exposure_events_for_supported": min_unique_exposure_events_for_supported,
+        "single_exposure_override_min_evidence_strength": single_exposure_override_min_evidence_strength,
+        "single_exposure_override_min_citations": single_exposure_override_min_citations,
     }
 
 
@@ -504,6 +621,95 @@ def build_training_rows_from_insights(conn) -> tuple[list[list[float]], list[int
         x.append(build_feature_vector(feature_map))
         y.append(label)
     return x, y
+
+
+def build_training_rows_from_user_feedback(conn) -> tuple[list[list[float]], list[int], list[int]]:
+    rows = conn.execute(
+        """
+        SELECT
+            i.user_id AS user_id,
+            d.time_gap_min_minutes,
+            d.time_gap_avg_minutes,
+            d.cooccurrence_count,
+            d.cooccurrence_unique_symptom_count,
+            d.pair_density,
+            d.exposure_count_7d,
+            d.symptom_count_7d,
+            d.severity_avg_after,
+            i.evidence_strength_score,
+            i.evidence_score,
+            i.citations_json,
+            COALESCE(v.verified, 0) AS verified,
+            COALESCE(v.rejected, 0) AS rejected
+        FROM insight_verifications v
+        JOIN insights i
+          ON i.user_id = v.user_id
+         AND i.item_id = v.item_id
+         AND i.symptom_id = v.symptom_id
+        JOIN derived_features d
+          ON d.user_id = i.user_id
+         AND d.item_id = i.item_id
+         AND d.symptom_id = i.symptom_id
+        WHERE (COALESCE(v.verified, 0) = 1 OR COALESCE(v.rejected, 0) = 1)
+          AND i.id = (
+            SELECT i2.id
+            FROM insights i2
+            WHERE i2.user_id = i.user_id
+              AND i2.item_id = i.item_id
+              AND i2.symptom_id = i.symptom_id
+            ORDER BY i2.created_at DESC, i2.id DESC
+            LIMIT 1
+          )
+        """
+    ).fetchall()
+
+    x: list[list[float]] = []
+    y: list[int] = []
+    groups: list[int] = []
+    for row in rows:
+        try:
+            citations = json.loads(row["citations_json"] or "[]")
+        except json.JSONDecodeError:
+            citations = []
+        evidence = {
+            "evidence_strength_score": _safe_float(row["evidence_strength_score"]),
+            "evidence_score": _safe_float(row["evidence_score"]),
+            "avg_relevance": 0.5,
+            "citations": citations if isinstance(citations, list) else [],
+        }
+        evidence_quality = compute_evidence_quality(evidence)
+        feature_map = {
+            "time_gap_min_minutes": _safe_float(row["time_gap_min_minutes"]),
+            "time_gap_avg_minutes": _safe_float(row["time_gap_avg_minutes"]),
+            "cooccurrence_count": _safe_float(row["cooccurrence_count"]),
+            "cooccurrence_unique_symptom_count": _safe_float(row["cooccurrence_unique_symptom_count"]),
+            "pair_density": _safe_float(row["pair_density"]),
+            "exposure_count_7d": _safe_float(row["exposure_count_7d"]),
+            "symptom_count_7d": _safe_float(row["symptom_count_7d"]),
+            "severity_avg_after": _safe_float(row["severity_avg_after"]),
+            "route_count": 1.0,
+            "lag_bucket_diversity": 1.0,
+            "exposure_with_ingredients_ratio": 0.0,
+            "evidence_strength_score": _safe_float(row["evidence_strength_score"]),
+            "evidence_score_signed": _safe_float(row["evidence_score"]),
+            "citation_count": evidence_quality["citation_count"],
+            "support_ratio": evidence_quality["support_ratio"],
+            "contradict_ratio": evidence_quality["contradict_ratio"],
+            "neutral_ratio": evidence_quality["neutral_ratio"],
+            "avg_relevance": evidence_quality["avg_relevance"],
+            "study_quality_score": evidence_quality["study_quality_score"],
+            "population_match": evidence_quality["population_match"],
+            "temporality_match": evidence_quality["temporality_match"],
+            "risk_of_bias": evidence_quality["risk_of_bias"],
+            "llm_confidence": evidence_quality["llm_confidence"],
+            "time_confidence_score": 0.8,
+        }
+        # verified => positive label, rejected => negative label (rejected wins if inconsistent row)
+        label = 0 if int(row["rejected"] or 0) == 1 else 1
+        x.append(build_feature_vector(feature_map))
+        y.append(label)
+        groups.append(_safe_int(row["user_id"], 0))
+    return x, y, groups
 
 
 def build_training_rows_from_curated_catalog(

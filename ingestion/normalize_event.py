@@ -91,8 +91,25 @@ ROUTE_ALIASES = {
     "subcutaneous": "injection",
     "shot": "injection",
     "injected": "injection",
+    # proximity / environment
+    "proximity": "proximity_environment",
+    "environment": "proximity_environment",
+    "environmental": "proximity_environment",
+    "nearby": "proximity_environment",
+    "second hand": "proximity_environment",
+    "secondhand": "proximity_environment",
+    "passive": "proximity_environment",
+    "air quality": "proximity_environment",
+    "pollen": "proximity_environment",
+    "dust": "proximity_environment",
+    "mold": "proximity_environment",
+    "smoke exposure": "proximity_environment",
+    "proximity environment": "proximity_environment",
+    # fallback
+    "unknown": "other",
+    "other": "other",
 }
-ROUTE_ALLOWED = {"ingestion", "inhalation", "dermal", "injection", "unknown"}
+ROUTE_ALLOWED = {"ingestion", "inhalation", "dermal", "injection", "proximity_environment", "other", "unknown"}
 
 def _normalize_route_token(route: str) -> str:
     value = route.strip().lower()
@@ -108,7 +125,7 @@ def normalize_route(route: str | None, strict: bool = True) -> str | None:
     if normalized not in ROUTE_ALLOWED:
         if strict:
             raise NormalizationError(f"unsupported route: {route}")
-        return "unknown"
+        return "other"
     return normalized
 
 

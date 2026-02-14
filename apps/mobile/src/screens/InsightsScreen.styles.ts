@@ -16,7 +16,7 @@ export const styles = StyleSheet.create({
   },
   headerTitle: {
     fontSize: 28,
-    fontWeight: "700",
+    fontFamily: "Exo2-Bold",
     color: "#101426",
   },
   card: {
@@ -29,15 +29,17 @@ export const styles = StyleSheet.create({
   },
   title: {
     fontSize: 16,
-    fontWeight: "700",
+    fontFamily: "Exo2-Bold",
     color: "#101426",
   },
   summary: {
     fontSize: 14,
+    fontFamily: "Exo2-Regular",
     color: "#343A52",
   },
   meta: {
     fontSize: 12,
+    fontFamily: "Exo2-Regular",
     color: "#69708A",
   },
   badge: {
@@ -48,16 +50,17 @@ export const styles = StyleSheet.create({
   },
   badgeText: {
     fontSize: 12,
-    fontWeight: "700",
+    fontFamily: "Exo2-SemiBold",
   },
   citationsHeader: {
     marginTop: 6,
     fontSize: 13,
-    fontWeight: "700",
+    fontFamily: "Exo2-Bold",
     color: "#232A44",
   },
   citationLine: {
     fontSize: 12,
+    fontFamily: "Exo2-Regular",
     color: "#343A52",
   },
   emptyText: {
@@ -65,5 +68,6 @@ export const styles = StyleSheet.create({
     textAlign: "center",
     color: "#5D6480",
     fontSize: 14,
+    fontFamily: "Exo2-Regular",
   },
 });

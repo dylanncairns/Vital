@@ -219,6 +219,12 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
         _migration_003_claims_item_support,
         _migration_004_background_jobs,
         _migration_005_model_retrain_state,
+        _migration_006_recurring_exposure_rules,
+        _migration_007_insight_event_links,
+        _migration_008_insight_verifications,
+        _migration_009_auth,
+        _migration_010_insight_rejections,
+        _migration_011_insight_source_ingredient,
     ]
     for migration in migrations:
         migration(conn)
@@ -278,6 +284,140 @@ def _migration_005_model_retrain_state(conn: sqlite3.Connection) -> None:
             ) VALUES (1, 0, 0, datetime('now'))
             """
         )
+
+
+def _migration_006_recurring_exposure_rules(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS recurring_exposure_rules (
+            id INTEGER NOT NULL PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            item_id INTEGER NOT NULL,
+            route TEXT NOT NULL,
+            start_at TEXT NOT NULL,
+            interval_hours INTEGER NOT NULL,
+            time_confidence TEXT,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            last_generated_at TEXT,
+            notes TEXT,
+            created_at TEXT,
+            updated_at TEXT,
+            FOREIGN KEY (user_id) REFERENCES users(id),
+            FOREIGN KEY (item_id) REFERENCES items(id)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_recurring_rules_user_active
+        ON recurring_exposure_rules(user_id, is_active)
+        """
+    )
+
+
+def _migration_007_insight_event_links(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS insight_event_links (
+            id INTEGER NOT NULL PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            insight_id INTEGER NOT NULL,
+            event_type TEXT NOT NULL CHECK (event_type IN ('exposure', 'symptom')),
+            event_id INTEGER NOT NULL,
+            created_at TEXT,
+            UNIQUE (insight_id, event_type, event_id),
+            FOREIGN KEY (user_id) REFERENCES users(id),
+            FOREIGN KEY (insight_id) REFERENCES insights(id) ON DELETE CASCADE
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_insight_event_links_user_event
+        ON insight_event_links(user_id, event_type, event_id)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_insight_event_links_insight
+        ON insight_event_links(insight_id)
+        """
+    )
+
+
+def _migration_008_insight_verifications(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS insight_verifications (
+            id INTEGER NOT NULL PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            item_id INTEGER NOT NULL,
+            symptom_id INTEGER NOT NULL,
+            verified INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT,
+            updated_at TEXT,
+            UNIQUE (user_id, item_id, symptom_id),
+            FOREIGN KEY (user_id) REFERENCES users(id),
+            FOREIGN KEY (item_id) REFERENCES items(id),
+            FOREIGN KEY (symptom_id) REFERENCES symptoms(id)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_insight_verifications_user
+        ON insight_verifications(user_id)
+        """
+    )
+
+
+def _migration_009_auth(conn: sqlite3.Connection) -> None:
+    if not _column_exists(conn, "users", "username"):
+        conn.execute("ALTER TABLE users ADD COLUMN username TEXT")
+    if not _column_exists(conn, "users", "password_hash"):
+        conn.execute("ALTER TABLE users ADD COLUMN password_hash TEXT")
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_unique
+        ON users(username)
+        WHERE username IS NOT NULL
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS auth_sessions (
+            id INTEGER NOT NULL PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            token TEXT NOT NULL UNIQUE,
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            revoked_at TEXT,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_auth_sessions_user
+        ON auth_sessions(user_id)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_auth_sessions_token
+        ON auth_sessions(token)
+        """
+    )
+
+
+def _migration_010_insight_rejections(conn: sqlite3.Connection) -> None:
+    if not _column_exists(conn, "insight_verifications", "rejected"):
+        conn.execute("ALTER TABLE insight_verifications ADD COLUMN rejected INTEGER NOT NULL DEFAULT 0")
+
+
+def _migration_011_insight_source_ingredient(conn: sqlite3.Connection) -> None:
+    if not _column_exists(conn, "insights", "source_ingredient_id"):
+        conn.execute("ALTER TABLE insights ADD COLUMN source_ingredient_id INTEGER")
 
 def initialize_database():
     db_exists = DB_PATH.exists()

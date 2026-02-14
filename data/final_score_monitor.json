@@ -1,0 +1,17 @@
+{
+  "created_at": "2026-02-14T02:32:38.950523+00:00",
+  "dataset_source": "hybrid",
+  "metrics": {
+    "auc": 1.0,
+    "average_precision": 1.0,
+    "brier": 0.0004954309278519741,
+    "high_conf_ratio": 0.6730769230769231,
+    "mean_probability": 0.6630497720085832,
+    "negatives": 17.0,
+    "positives": 35.0,
+    "rows": 52.0,
+    "std_probability": 0.4531279896804243
+  },
+  "promoted": true,
+  "reason": "promote_previous_not_usable"
+}

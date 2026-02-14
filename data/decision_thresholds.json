@@ -1,8 +1,13 @@
 {
-  "created_at": "2026-02-13T08:54:13.150603+00:00",
+  "created_at": "2026-02-14T02:32:35.057153+00:00",
   "source": "hybrid",
   "target_precision": 0.75,
   "min_evidence_strength": 0.2,
-  "min_model_probability": 0.8,
-  "min_overall_confidence": 0.8
+  "min_model_probability": 0.2843089298790526,
+  "min_overall_confidence": 0.45,
+  "min_cooccurrence_for_supported": 2.0,
+  "min_support_direction": 0.1,
+  "min_unique_exposure_events_for_supported": 2.0,
+  "single_exposure_override_min_evidence_strength": 0.92,
+  "single_exposure_override_min_citations": 4.0
 }

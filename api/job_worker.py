@@ -6,7 +6,7 @@ import time
 from api.main import ProcessJobsIn, process_background_jobs
 
 
-def run_once(*, limit: int = 20, max_papers_per_query: int = 3) -> dict:
+def run_once(*, limit: int = 20, max_papers_per_query: int = 8) -> dict:
     return process_background_jobs(
         ProcessJobsIn(limit=limit, max_papers_per_query=max_papers_per_query)
     )
@@ -15,7 +15,7 @@ def run_once(*, limit: int = 20, max_papers_per_query: int = 3) -> dict:
 def run_forever(
     *,
     limit: int = 20,
-    max_papers_per_query: int = 3,
+    max_papers_per_query: int = 8,
     interval_seconds: float = 2.0,
     idle_sleep_seconds: float = 5.0,
 ) -> None:
@@ -34,7 +34,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run background jobs worker for insights/evidence.")
     parser.add_argument("--once", action="store_true", help="Process one batch and exit")
     parser.add_argument("--limit", type=int, default=20, help="Max jobs per batch")
-    parser.add_argument("--max-papers-per-query", type=int, default=3, help="RAG retrieval rows per candidate")
+    parser.add_argument("--max-papers-per-query", type=int, default=8, help="RAG retrieval rows per candidate")
     parser.add_argument("--interval-seconds", type=float, default=2.0, help="Sleep between active batches")
     parser.add_argument("--idle-sleep-seconds", type=float, default=5.0, help="Sleep when no jobs are pending")
     args = parser.parse_args()

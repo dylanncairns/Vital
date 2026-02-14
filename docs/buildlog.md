@@ -1,16 +1,16 @@
-Build Log:
+# Build Log:
 
-# Commit 1
+## Commit 1
 - Established framework for what system and repo will look like upon end of phase 1 (first completed and deployable version)
 
-# Commit 2
+## Commit 2
 - Archived test run model (prototype v1) in iOS/VitalPrototype
 - Built functional barebones python api and tested health
 
-# Commits 3-5
+## Commits 3-5
 - Built basic swift <-> python <-> sql prototype v2 and tested successful integration across frontend & backend
 
-# Commits 6-8
+## Commits 6-8
 - Updated sqlite table schemas from foundational products & ingredients & products_ingredients to items, ingredients, aliases, claims, evidence, users, symptoms, exposure_events, symptom_events
     - User table is referenced by exposure_events (also references items) and symptom_events (also references symptoms)
     - Items_ingredients references items and ingredients
@@ -18,10 +18,10 @@ Build Log:
 - Integrated updated schema.db with db.py using pathlib
 - Created api/__init__.py and api/repositories/__init__.py to initialize api repos as packages
 
-# Commits 9-10
+## Commits 9-10
 - Added initial data flow where /events endpoint accepts JSON input with event details, data is then validated and stored in SQLite symptom_event or exposure_event table, and then saved event info and id is returned
 
-# Commit 11
+## Commit 11
 - Created backend for events data display
     - Added get/events endpoint to create timeline that displays exposures and symptoms longitudinally
     - Inserted seed exposure and symptom event data for a single user to test /events flow for get and post
@@ -29,12 +29,12 @@ Build Log:
         - schema.sql serves as schema template
         - seed.sql used for testing
 
-# Commit 12
+## Commit 12
 - Established end-to-end loop for "Log Event" input form page (post/events endpoint) and a timeline display page (get/events endpoint)
     - archived swiftui clients
     - created apps folder for react native mobile and react web
 
-# Commit 13
+## Commit 13
 - updated schema.sql
     - evidence --> papers (for ingestion of published evidence linking a symptom and ingredient)
     - derived_features table for storing inputs to model that will compute confidence score for there being strong evidence supporting linkage between a symptom and ingredient based on a user's specific exposures and symptoms patterns
@@ -86,7 +86,7 @@ Build Log:
         - fixed logging failure when timestamp given as "morning", "afternoon" etc
     - next version will remove most of the regex in ingestion pipeline and outsource parsing to LLM api calls with strict formatting rules, as regex cannot keep up with the variety in user input
 
-# Commit 14
+## Commit 14
 - upgraded from pure event logging to a foundation for insight generation
     - production skeleton for linkage insight generation built, UI unchanged
     - Updated route alias mapping with token normalization
@@ -113,13 +113,13 @@ Build Log:
     - most recent commit is fully backend logic and preparation for insight generation models as stated above, no frontend implementation yet
     - next versions will include RAG evidence retrival, then model scoring, then UI update to add insights to timeline 
 
-# Commit 15
+## Commit 15
 - cleaned up some duplicate engineering logic
     - removed old uncalled files (items.py and symptoms.py)
     - added raw_event_ingest and removed duplicate logic found in main and ingest_text
     - added time_utils and removed duplicate logic found in normalize_event and ingest_text
 
-# Commit 16
+## Commit 16
 - validated feature computation
     - added tests for feature math and time window logic
         - verified lag minimum and average, coocurrence handling, number of features generated, severity inference average, insight scores, retrival run endpoint
@@ -133,7 +133,7 @@ Build Log:
     - implement XGBoost inference path and model correlation score + evidence strength score
     - update UI to properly display insight computation output
 
-# Commit 17
+## Commit 17
 - Implemented retrival of evidence and the claim it supports tied to each candidate pair, with citations returned in /insights
     - Added rag.py pipeline to retrieve evidence with structured querie into OpenAI API using environment-configurable model (currently gpt-4.1) to retrieve relevant citations and return structured output when given a clear candidate linkage and instruction as part of the prompt
         - claims DB currently stores local token embeddings (local-token-v1 JSON vector) and OpenAI vector store is used during retrival path
@@ -168,7 +168,7 @@ Build Log:
     - Worker recomputes candidates
     - Insight appears in UI if evidence passes thresholds
 
-# Commit 18
+## Commit 18
 - Developed model that uses gradient boosting to predict whether a candidate linkage is likely true for a user
     - Input features include:
         - user's personal timeline
@@ -204,7 +204,36 @@ Build Log:
             - Case rows are anchored to established symptom episodes, with y=1
             - Control rows are anchored to time-aware windows that lack nearby symptom episodes, with y=0
             - Features are computed identically for both so model can learn pattern differences in symptom onset vs baseline windows
-        - train_model.py combines these with --dataset-source hybrid
+        - training split into `train_xgboost.py` and `train_regression.py` with shared `training_pipeline.py`
     - curated dataset made to align with the purpose of the app, which is to surface insight into underlying reactions to logged exposures that might be causing QOL diminishing health symptoms which user may not previously have correlated
 - implemented a dedicated fusion score calculator in final_score.py, which trains a fusion logistic regression model over P, q (E alr factored in), p, P*q, q*(1-p), contradiction ratio, citation count
 - standing functionality: ingestion, candidate generation, RAG-backed evidence, persisted insights, background jobs, and calibrated scoring all integrated and working together
+
+## Commit 19
+- Improved UX for information entry
+    - Created a form-like interface for setting up recurring exposures for things which a user knows will appear on their timeline with a repeated interval that could potentially be impactful
+        - see schema.sql --> recurring_exposure_rules
+    - Improved ingestion pipeline to better parse over multi sentence or convoluted text blurbs, enabling one long input to create many entries in timeline
+        - lots of edge case handling for handling the way a person might normally text in casual, ambiguous flows that dont allow obvious parsing strategies to work
+    - Implemented async interaction with timeline events to enable editing and deletion of items on timeline that actually persists throughout backend, db, user features, etc
+        - Users can now add missing details such as symptom severity and change event times
+- Polished UI across all nav tabs (screen layout + color palette)
+- Added account features for user
+    - Registration for an account creates unique user_id 
+    - Added account nav tab with functioning login + logout
+- Implemented + audited LLM generated DB for common item -> ingredient expansions
+- implemented model eval guardrails
+    - fusion score calculation artifacts only are integrated into current model behavior if it passes precision score, brier score loss, auc score validation and drift checks
+    - each artifact version stored and can be compared to previous model before pushing to production
+    - detect input and output drift in distributions and large changes, with auto fallback to previous model if drift or quality deterioration is detected
+- implemented insight verification/rejection by user
+    - allows for personalized model eval to be more robust and enables users to track changes they make in lifestyle to symptom reduction / removal
+- improved model accuracy through a ton of manual testing, input, reprogramming weights
+    - made the XGBoost P model intentionally lighter and more stable by adding a monotonous temporal baseline to remove heavy dependence on brittle learned weighting while keeping the model signal still prominent
+    - with this said, the model still performs very poorly in comparison to how accurate I would like it to eventually be
+- next steps:
+    - multi-exposure to one symptom candidates
+    - voice to text ingestion
+    - migration from SQLite to PostgreSQL
+    - make the confidence score computation more accurate
+    - refine the ingestion pipeline

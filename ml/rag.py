@@ -6,6 +6,7 @@ import re
 from datetime import datetime, timezone
 from hashlib import sha256
 from typing import Any
+from urllib.parse import urlparse
 
 from sklearn.feature_extraction.text import HashingVectorizer
 from sklearn.metrics.pairwise import cosine_similarity as sklearn_cosine_similarity
@@ -79,6 +80,7 @@ RAG_SCHEMA = {
                                     "temporality_match": {"type": "number", "minimum": 0, "maximum": 1},
                                     "risk_of_bias": {"type": "number", "minimum": 0, "maximum": 1},
                                     "llm_confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                                    "support_direction_score": {"type": "number", "minimum": -1, "maximum": 1},
                                 },
                                 "required": [
                                     "citation_id",
@@ -90,6 +92,7 @@ RAG_SCHEMA = {
                                     "temporality_match",
                                     "risk_of_bias",
                                     "llm_confidence",
+                                    "support_direction_score",
                                 ],
                             },
                         },
@@ -261,6 +264,36 @@ def _claim_text(row: dict[str, Any]) -> str:
     return " ".join(field for field in fields if isinstance(field, str) and field.strip())
 
 
+def _candidate_tokens(value: str | None) -> list[str]:
+    normalized = _normalize_phrase(value or "")
+    if not normalized:
+        return []
+    stop = {
+        "a",
+        "an",
+        "the",
+        "and",
+        "or",
+        "to",
+        "of",
+        "in",
+        "on",
+        "for",
+        "with",
+        "symptom",
+        "exposure",
+        "item",
+    }
+    return [token for token in normalized.split() if len(token) >= 3 and token not in stop]
+
+
+def _contains_token_like(text: str, token: str) -> bool:
+    if not text or not token:
+        return False
+    pattern = re.compile(rf"\b{re.escape(token)}(?:s|es|er|ers|ing|ed)?\b")
+    return pattern.search(text) is not None
+
+
 def retrieve_claim_evidence(
     conn,
     *,
@@ -268,7 +301,7 @@ def retrieve_claim_evidence(
     item_id: int | None,
     symptom_id: int,
     query_text: str,
-    top_k: int = 5,
+    top_k: int = 12,
 ) -> list[dict[str, Any]]:
     if top_k <= 0:
         return []
@@ -326,7 +359,8 @@ def retrieve_claim_evidence(
             c.evidence_polarity_and_strength AS evidence_polarity_and_strength,
             p.title AS title,
             p.abstract AS abstract,
-            p.publication_date AS publication_date
+            p.publication_date AS publication_date,
+            p.source AS source
         FROM claims c
         JOIN papers p ON p.id = c.paper_id
         WHERE c.symptom_id = ?
@@ -336,10 +370,39 @@ def retrieve_claim_evidence(
     ).fetchall()
 
     row_dicts = [dict(raw) for raw in rows]
+    item_tokens: list[str] = []
+    ingredient_tokens: list[str] = []
+    symptom_tokens: list[str] = []
+    if item_id is not None:
+        item_row = conn.execute("SELECT name FROM items WHERE id = ? LIMIT 1", (item_id,)).fetchone()
+        if item_row and item_row["name"]:
+            item_tokens = _candidate_tokens(str(item_row["name"]))
+    if ingredient_ids:
+        placeholders = ",".join("?" for _ in ingredient_ids)
+        ing_rows = conn.execute(
+            f"SELECT name FROM ingredients WHERE id IN ({placeholders})",
+            tuple(sorted(ingredient_ids)),
+        ).fetchall()
+        for ing_row in ing_rows:
+            ingredient_tokens.extend(_candidate_tokens(str(ing_row["name"] or "")))
+    symptom_row = conn.execute("SELECT name FROM symptoms WHERE id = ? LIMIT 1", (symptom_id,)).fetchone()
+    if symptom_row and symptom_row["name"]:
+        symptom_tokens = _candidate_tokens(str(symptom_row["name"]))
+
     claim_texts = [_claim_text(row) for row in row_dicts]
     scores = _relevance_scores(query_text, claim_texts)
     scored: list[dict[str, Any]] = []
-    for row, relevance in zip(row_dicts, scores):
+    base_min_relevance = max(0.0, min(1.0, float(os.getenv("RAG_MIN_DB_RELEVANCE", "0.12"))))
+    min_relevance = base_min_relevance if len(row_dicts) > max(3, top_k) else 0.0
+    for row, relevance, claim_text in zip(row_dicts, scores, claim_texts):
+        normalized_text = _normalize_phrase(claim_text)
+        if relevance < min_relevance:
+            continue
+        if symptom_tokens and not any(_contains_token_like(normalized_text, token) for token in symptom_tokens):
+            continue
+        exposure_tokens = item_tokens or ingredient_tokens
+        if exposure_tokens and not any(_contains_token_like(normalized_text, token) for token in exposure_tokens):
+            continue
         row["relevance"] = relevance
         scored.append(row)
 
@@ -519,6 +582,204 @@ def _bounded_metric(value: Any, *, default: float = 0.5) -> float:
     return parsed
 
 
+_HAZARD_CONTEXT_TERMS = {
+    "outbreak",
+    "waterborne",
+    "foodborne",
+    "contaminated",
+    "pathogen",
+    "infection",
+    "salmonella",
+    "campylobacter",
+    "e coli",
+    "listeria",
+    "undercooked",
+    "spoiled",
+}
+_EXPLICIT_HAZARD_ITEM_TERMS = {
+    "contaminated",
+    "undercooked",
+    "raw",
+    "spoiled",
+    "unsafe",
+    "tainted",
+}
+_GENERIC_ITEM_TOKENS = {
+    "food",
+    "drink",
+    "meal",
+    "medication",
+    "supplement",
+    "exposure",
+    "item",
+}
+
+_CONTRADICTORY_CUE_TERMS = {
+    "no evidence",
+    "no association",
+    "not associated",
+    "did not",
+    "does not",
+    "not linked",
+    "no data",
+    "not a cause",
+    "not cause",
+    "unlikely",
+}
+_LIMITED_EVIDENCE_CUE_TERMS = {
+    "limited evidence",
+    "insufficient evidence",
+    "more research is needed",
+    "more research needed",
+    "unclear",
+    "inconclusive",
+}
+_SYMPTOM_TEXT_TERMS = {
+    "headache",
+    "migraine",
+    "nausea",
+    "vomiting",
+    "stomachache",
+    "stomach pain",
+    "abdominal pain",
+    "diarrhea",
+    "constipation",
+    "acne",
+    "rash",
+    "itch",
+    "itchy",
+    "hives",
+    "fatigue",
+    "brain fog",
+    "dizziness",
+    "anxiety",
+    "insomnia",
+    "fever",
+    "cough",
+    "sore throat",
+}
+
+
+def _is_hazard_context_mismatch(*, item_name: str | None, snippet: str, title: str) -> bool:
+    item = " ".join((item_name or "").strip().lower().split())
+    if not item:
+        return False
+    if any(token in item for token in _EXPLICIT_HAZARD_ITEM_TERMS):
+        return False
+    text = f"{title} {snippet}".strip().lower()
+    return any(term in text for term in _HAZARD_CONTEXT_TERMS)
+
+
+def _item_tokens_for_match(item_name: str | None) -> list[str]:
+    normalized = " ".join((item_name or "").strip().lower().split())
+    if not normalized:
+        return []
+    tokens = [t for t in re.findall(r"[a-z0-9]+", normalized) if len(t) >= 3]
+    return [t for t in tokens if t not in _GENERIC_ITEM_TOKENS]
+
+
+def _item_context_mismatch(*, item_name: str | None, text: str) -> bool:
+    tokens = _item_tokens_for_match(item_name)
+    if not tokens:
+        return False
+    normalized = " ".join((text or "").strip().lower().split())
+    if not normalized:
+        return True
+    # For stem-like terms, allow basic inflections ("work" -> "worker", "working").
+    for token in tokens:
+        if token in normalized:
+            return False
+        if any(form in normalized for form in (f"{token}er", f"{token}ers", f"{token}ing", f"{token}ed")):
+            return False
+    return True
+
+
+def _apply_support_direction_cues(
+    *,
+    support_direction_score: float,
+    claim: str,
+    snippet: str,
+    title: str,
+) -> float:
+    text = f"{title} {claim} {snippet}".strip().lower()
+    if any(term in text for term in _CONTRADICTORY_CUE_TERMS):
+        # Explicit non-supportive wording must not become positive correlation support.
+        return min(support_direction_score, -0.6)
+    if any(term in text for term in _LIMITED_EVIDENCE_CUE_TERMS):
+        return min(support_direction_score, 0.0)
+    return support_direction_score
+
+
+def _polarity_from_text_cues(
+    *,
+    fallback_polarity: float,
+    text: str,
+) -> float:
+    normalized = " ".join((text or "").strip().lower().split())
+    if not normalized:
+        return max(-1.0, min(1.0, fallback_polarity))
+    if any(term in normalized for term in _CONTRADICTORY_CUE_TERMS):
+        return min(max(-1.0, fallback_polarity), -0.7)
+    if any(term in normalized for term in _LIMITED_EVIDENCE_CUE_TERMS):
+        return min(max(-1.0, fallback_polarity), 0.0)
+    return max(-1.0, min(1.0, fallback_polarity))
+
+
+def _symptom_context_mismatch(
+    *,
+    symptom_name: str | None,
+    text: str,
+) -> bool:
+    symptom = " ".join((symptom_name or "").strip().lower().split())
+    normalized = " ".join((text or "").strip().lower().split())
+    if not symptom or not normalized:
+        return False
+    if symptom in normalized:
+        return False
+    # If another known symptom term appears but the target symptom doesn't, treat as mismatch.
+    for term in _SYMPTOM_TEXT_TERMS:
+        if term == symptom:
+            continue
+        if term in normalized:
+            return True
+    return False
+
+
+def _study_design_multiplier(study_design: Any) -> float:
+    normalized = str(study_design or "").strip().lower()
+    weights = {
+        "meta_analysis": 1.0,
+        "systematic_review": 0.9,
+        "rct": 0.9,
+        "cohort": 0.75,
+        "case_control": 0.65,
+        "cross_sectional": 0.45,
+        "case_report": 0.25,
+        "animal": 0.20,
+        "in_vitro": 0.10,
+        "other": 0.35,
+    }
+    return weights.get(normalized, 0.35)
+
+
+def _citation_source_label(citation: dict[str, Any]) -> str | None:
+    url_value = citation.get("url")
+    if isinstance(url_value, str) and url_value.strip():
+        try:
+            host = urlparse(url_value.strip()).hostname or ""
+            host = host.lower()
+            if host.startswith("www."):
+                host = host[4:]
+            if host:
+                return host
+        except Exception:
+            pass
+    doi_value = citation.get("doi")
+    if isinstance(doi_value, str) and doi_value.strip():
+        return "doi"
+    return None
+
+
 def _llm_retrieve_evidence_rows(
     *,
     symptom_name: str,
@@ -547,10 +808,18 @@ def _llm_retrieve_evidence_rows(
         "Use ONLY retrieved file_search chunks from the configured vector store. "
         "Return JSON that exactly matches the schema. No extra keys, no missing keys. "
         "If evidence is insufficient, return empty citations/evidence arrays and explain limits in answer. "
+        "Treat the candidate exposure literally and specifically; do not substitute broader hazard contexts. "
+        "Example: ordinary 'water' should NOT be treated as contaminated/waterborne outbreak exposure "
+        "unless the candidate text explicitly indicates contamination or unsafe water. "
+        "Do NOT treat loosely related occupational/cohort populations as evidence unless the candidate exposure "
+        "itself is explicitly present in the cited snippet/title. "
+        "If the citation discusses a different exposure than the candidate, exclude it. "
         "DO NOT invent citation_ids, file_ids, chunk_ids, DOI, URLs, titles, or years. "
         "Each evidence.supports entry must reference a citation_id present in citations. "
         "For each support, assign study_design and numeric metrics from the retrieved text only: "
-        "study_quality_score, population_match, temporality_match, risk_of_bias, llm_confidence in [0,1]."
+        "study_quality_score, population_match, temporality_match, risk_of_bias, llm_confidence in [0,1]. "
+        "Also assign support_direction_score in [-1,1] where -1 is contradictory, 0 is mixed/unclear, "
+        "and +1 is strongly supportive for the exact exposure-symptom linkage and temporal pattern."
     )
     question_payload = {
         "symptom_name": symptom_name,
@@ -562,7 +831,10 @@ def _llm_retrieve_evidence_rows(
             "Retrieve evidence linking exposure to symptom.",
             "Return JSON matching schema exactly.",
             "Citations/supports must map to retrieved results.",
+            "Reject citations where candidate exposure term is not explicitly present in snippet/title.",
+            f"Return up to {max_evidence_rows} strongest evidence rows; fewer is preferred over weak matches.",
             "Populate support-level study quality and match metrics strictly in [0,1].",
+            "Populate support_direction_score in [-1,1] for each support.",
         ],
     }
 
@@ -662,7 +934,7 @@ def _llm_retrieve_evidence_rows(
         supports = block.get("supports")
         if not isinstance(claim, str) or not claim.strip() or not isinstance(supports, list):
             continue
-        polarity = _infer_polarity_strength(claim)
+        claim_polarity = _infer_polarity_strength(claim)
         for support in supports:
             if not isinstance(support, dict):
                 continue
@@ -675,6 +947,11 @@ def _llm_retrieve_evidence_rows(
             temporality_match = _bounded_metric(support.get("temporality_match"))
             risk_of_bias = _bounded_metric(support.get("risk_of_bias"))
             llm_confidence = _bounded_metric(support.get("llm_confidence"))
+            try:
+                support_direction_score = float(support.get("support_direction_score"))
+            except (TypeError, ValueError):
+                support_direction_score = 0.0
+            support_direction_score = max(-1.0, min(1.0, support_direction_score))
             if not isinstance(citation_id, str) or citation_id.strip() not in citation_map:
                 continue
             if not isinstance(snippet, str) or not snippet.strip():
@@ -693,17 +970,42 @@ def _llm_retrieve_evidence_rows(
             citation = citation_map[citation_id.strip()]
             citation_url = citation.get("url")
             citation_url_value = citation_url.strip() if isinstance(citation_url, str) and citation_url.strip() else None
+            citation_title = str(citation.get("title") or "")
+            snippet_value = snippet.strip()
+            cue_text = f"{citation_title} {claim.strip()} {snippet_value}".strip()
+            if _item_context_mismatch(item_name=item_name, text=cue_text):
+                continue
+            if _symptom_context_mismatch(symptom_name=symptom_name, text=cue_text):
+                # Do not ingest support rows for a different symptom than the candidate.
+                continue
+            support_direction_score = _apply_support_direction_cues(
+                support_direction_score=support_direction_score,
+                claim=claim.strip(),
+                snippet=snippet_value,
+                title=citation_title,
+            )
+            if _is_hazard_context_mismatch(
+                item_name=item_name,
+                snippet=snippet_value,
+                title=citation_title,
+            ):
+                # Drop contaminated/outbreak context for generic exposures (e.g., plain "water").
+                continue
+            if abs(support_direction_score) >= 0.05:
+                polarity = support_direction_score
+            else:
+                polarity = 0.25 * float(claim_polarity)
             output.append(
                 {
                     "title": citation["title"],
                     "url": citation_url_value,
                     "publication_date": str(citation.get("year")) if citation.get("year") is not None else None,
-                    "source": "openai_file_search",
+                    "source": _citation_source_label(citation),
                     "item_name": item_name,
                     "ingredient_name": ingredient_names[0] if ingredient_names else None,
                     "symptom_name": symptom_name,
                     "summary": claim.strip(),
-                    "snippet": snippet.strip(),
+                    "snippet": snippet_value,
                     "evidence_polarity_and_strength": polarity,
                     "study_design": study_design.strip().lower(),
                     "study_quality_score": study_quality_score,
@@ -747,7 +1049,7 @@ def _llm_retrieve_evidence_rows(
                         "title": citation.get("title") or "Untitled citation",
                         "url": citation_url_value,
                         "publication_date": str(citation.get("year")) if citation.get("year") is not None else None,
-                        "source": "openai_file_search",
+                        "source": _citation_source_label(citation),
                         "item_name": item_name,
                         "ingredient_name": ingredient_names[0] if ingredient_names else None,
                         "symptom_name": symptom_name,
@@ -841,7 +1143,7 @@ def sync_claims_for_candidates(
     symptom_name_map: dict[int, str],
     item_name_map: dict[int, str],
     online_enabled: bool = True,
-    max_papers_per_query: int = 3,
+    max_papers_per_query: int = 8,
     http_get=None,
     llm_retriever=_llm_retrieve_evidence_rows,
 ) -> dict[str, int]:
@@ -878,15 +1180,41 @@ def sync_claims_for_candidates(
                 for ingredient_id in ingredient_ids
                 if ingredient_id in ingredient_name_map
             ]
-
-            llm_rows = llm_retriever(
-                symptom_name=symptom_name,
-                ingredient_names=ingredient_names,
-                item_name=item_name,
-                routes=sorted(candidate.get("routes", [])),
-                lag_bucket_counts=candidate.get("lag_bucket_counts"),
-                max_evidence_rows=max_papers_per_query,
-            )
+            llm_rows: list[dict[str, Any]] = []
+            if ingredient_ids:
+                # Per expanded ingredient: use existing DB claims when present; call LLM only for missing coverage.
+                missing_ingredient_names: list[str] = []
+                for ingredient_id in ingredient_ids:
+                    has_existing = conn.execute(
+                        """
+                        SELECT 1
+                        FROM claims
+                        WHERE ingredient_id = ? AND symptom_id = ?
+                        LIMIT 1
+                        """,
+                        (int(ingredient_id), int(symptom_id)),
+                    ).fetchone()
+                    if has_existing is None and int(ingredient_id) in ingredient_name_map:
+                        missing_ingredient_names.append(str(ingredient_name_map[int(ingredient_id)]))
+                for ingredient_name in missing_ingredient_names:
+                    ingredient_rows = llm_retriever(
+                        symptom_name=symptom_name,
+                        ingredient_names=[ingredient_name],
+                        item_name=item_name,
+                        routes=sorted(candidate.get("routes", [])),
+                        lag_bucket_counts=candidate.get("lag_bucket_counts"),
+                        max_evidence_rows=max_papers_per_query,
+                    )
+                    llm_rows.extend(ingredient_rows)
+            else:
+                llm_rows = llm_retriever(
+                    symptom_name=symptom_name,
+                    ingredient_names=ingredient_names,
+                    item_name=item_name,
+                    routes=sorted(candidate.get("routes", [])),
+                    lag_bucket_counts=candidate.get("lag_bucket_counts"),
+                    max_evidence_rows=max_papers_per_query,
+                )
             for row in llm_rows:
                 row_ingredient_id: int | None = None
                 row_item_id: int | None = None
@@ -987,7 +1315,7 @@ def enrich_claims_for_candidates(
     symptom_name_map: dict[int, str],
     item_name_map: dict[int, str],
     online_enabled: bool = True,
-    max_papers_per_query: int = 3,
+    max_papers_per_query: int = 8,
     http_get=None,
     llm_retriever=_llm_retrieve_evidence_rows,
 ) -> dict[str, int]:
@@ -1004,7 +1332,12 @@ def enrich_claims_for_candidates(
     )
 
 
-def aggregate_evidence(retrieved_claims: list[dict[str, Any]]) -> dict[str, Any]:
+def aggregate_evidence(
+    retrieved_claims: list[dict[str, Any]],
+    *,
+    item_name: str | None = None,
+    symptom_name: str | None = None,
+) -> dict[str, Any]:
     if not retrieved_claims:
         return {
             "evidence_score": 0.0,
@@ -1020,7 +1353,30 @@ def aggregate_evidence(retrieved_claims: list[dict[str, Any]]) -> dict[str, Any]
     citations: list[dict[str, Any]] = []
 
     for claim in retrieved_claims:
-        polarity = float(claim.get("evidence_polarity_and_strength") or 0.0)
+        base_polarity = max(-1.0, min(1.0, float(claim.get("evidence_polarity_and_strength") or 0.0)))
+        cue_text = " ".join(
+            part
+            for part in [
+                str(claim.get("citation_title") or ""),
+                str(claim.get("summary") or ""),
+                str(claim.get("citation_snippet") or ""),
+                str(claim.get("chunk_text") or ""),
+            ]
+            if part
+        )
+        polarity = _polarity_from_text_cues(
+            fallback_polarity=base_polarity,
+            text=cue_text,
+        )
+        if _is_hazard_context_mismatch(
+            item_name=item_name,
+            snippet=str(claim.get("citation_snippet") or ""),
+            title=str(claim.get("citation_title") or claim.get("title") or ""),
+        ):
+            polarity = min(polarity, 0.0)
+        if _symptom_context_mismatch(symptom_name=symptom_name, text=cue_text):
+            polarity = min(polarity, 0.0)
+        design_multiplier = _study_design_multiplier(claim.get("study_design"))
         relevance = max(0.05, float(claim.get("relevance") or 0.0))
         study_quality = _bounded_metric(claim.get("study_quality_score"))
         population_match = _bounded_metric(claim.get("population_match"))
@@ -1037,7 +1393,7 @@ def aggregate_evidence(retrieved_claims: list[dict[str, Any]]) -> dict[str, Any]
         )
         weight = max(0.05, min(1.0, quality_weight))
         relevance_sum += weight
-        weighted_sum += polarity * weight
+        weighted_sum += polarity * design_multiplier * weight
         total_weight += weight
 
         snippet = (
@@ -1050,9 +1406,12 @@ def aggregate_evidence(retrieved_claims: list[dict[str, Any]]) -> dict[str, Any]
         citations.append(
             {
                 "title": claim.get("citation_title") or claim.get("title"),
+                "source": claim.get("source"),
                 "url": claim.get("citation_url"),
                 "snippet": snippet_text,
-                "evidence_polarity_and_strength": int(claim.get("evidence_polarity_and_strength") or 0),
+                "evidence_polarity_and_strength": max(
+                    -1.0, min(1.0, float(claim.get("evidence_polarity_and_strength") or 0.0))
+                ),
                 "study_design": claim.get("study_design"),
                 "study_quality_score": study_quality,
                 "population_match": population_match,
@@ -1076,13 +1435,14 @@ def aggregate_evidence(retrieved_claims: list[dict[str, Any]]) -> dict[str, Any]
     strength_factor = (0.6 * quality_factor) + (0.4 * coverage_factor)
     evidence_strength_score = max(0.0, min(1.0, abs(evidence_score) * strength_factor))
     direction = "mixed"
-    if evidence_score > 0.15:
+    if evidence_score > 0.25:
         direction = "supportive"
-    elif evidence_score < -0.15:
+    elif evidence_score < -0.25:
         direction = "contradictory"
 
     return {
         "evidence_score": evidence_score,
+        "evidence_support_score": evidence_score,
         "evidence_strength_score": evidence_strength_score,
         "avg_relevance": avg_relevance,
         "evidence_summary": (

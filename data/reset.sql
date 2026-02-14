@@ -1,48 +1,63 @@
--- Wipe all application data while keeping schema intact
--- Usage: sqlite3 data/central.db < data/reset_data.sql
+-- User-scoped data purge for current local user (id = 1).
+-- Run:
+--   sqlite3 data/central.db < data/reset.sql
 --
-/*
-Non-destructive re-score of existing insights (does NOT wipe DB).
-
-1) Recompute one user:
-curl -X POST "http://127.0.0.1:8000/insights/recompute" \
-  -H "Content-Type: application/json" \
-  -d '{"user_id":1,"online_enabled":false,"max_papers_per_query":5}'
-
-2) Recompute all users currently in DB:
-for uid in $(sqlite3 data/central.db "SELECT id FROM users;"); do
-  curl -s -X POST "http://127.0.0.1:8000/insights/recompute" \
-    -H "Content-Type: application/json" \
-    -d "{\"user_id\":$uid,\"online_enabled\":false,\"max_papers_per_query\":5}" >/dev/null
-  echo "recomputed user $uid"
-done
-*/
+-- Keeps intact:
+-- - tables/schema
+-- - items/symptoms/ingredients catalogs
+-- - papers/claims evidence corpus
+-- - trained model artifacts on disk
+--
+-- Removes only this user's timeline + computed artifacts/jobs:
+-- - events, expansions, derived features, insights, links/verifications,
+--   retrieval runs, recurring rules, background jobs, ingest logs
+-- - optional: user row itself (enabled below)
 
 PRAGMA foreign_keys = OFF;
-BEGIN TRANSACTION;
+PRAGMA busy_timeout = 30000;
+BEGIN IMMEDIATE TRANSACTION;
 
-DELETE FROM background_jobs;
-DELETE FROM retrieval_runs;
-DELETE FROM insights;
-DELETE FROM derived_features_ingredients;
-DELETE FROM derived_features;
-DELETE FROM claims;
-DELETE FROM papers;
-DELETE FROM exposure_expansions;
-DELETE FROM symptom_events;
-DELETE FROM exposure_events;
-DELETE FROM raw_event_ingest;
-DELETE FROM items_ingredients;
-DELETE FROM ingredients_aliases;
-DELETE FROM symptoms_aliases;
-DELETE FROM items_aliases;
-DELETE FROM ingredients;
-DELETE FROM symptoms;
-DELETE FROM items;
-DELETE FROM users;
+DELETE FROM background_jobs
+WHERE user_id = 1;
 
--- Reset AUTOINCREMENT counters for tables that use INTEGER PRIMARY KEY.
-DELETE FROM sqlite_sequence;
+DELETE FROM recurring_exposure_rules
+WHERE user_id = 1;
+
+DELETE FROM retrieval_runs
+WHERE user_id = 1;
+
+DELETE FROM insight_event_links
+WHERE user_id = 1;
+
+DELETE FROM insight_verifications
+WHERE user_id = 1;
+
+DELETE FROM insights
+WHERE user_id = 1;
+
+DELETE FROM derived_features
+WHERE user_id = 1;
+
+DELETE FROM derived_features_ingredients
+WHERE user_id = 1;
+
+DELETE FROM raw_event_ingest
+WHERE user_id = 1;
+
+DELETE FROM exposure_expansions
+WHERE exposure_event_id IN (
+  SELECT id FROM exposure_events WHERE user_id = 1
+);
+
+DELETE FROM symptom_events
+WHERE user_id = 1;
+
+DELETE FROM exposure_events
+WHERE user_id = 1;
+
+-- Keep local dev user id=1 so app inserts continue to work after reset.
+INSERT OR IGNORE INTO users (id, created_at, name)
+VALUES (1, datetime('now'), 'Local User');
 
 COMMIT;
 PRAGMA foreign_keys = ON;

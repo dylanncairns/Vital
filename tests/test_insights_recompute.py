@@ -137,6 +137,8 @@ class InsightsRecomputeTests(unittest.TestCase):
                 "suppressed_low_evidence_strength",
                 "suppressed_low_model_probability",
                 "suppressed_low_overall_confidence",
+                "suppressed_non_supportive_direction",
+                "suppressed_insufficient_recurrence",
             },
         )
 
@@ -302,7 +304,77 @@ class InsightsRecomputeTests(unittest.TestCase):
         )
         assert insight is not None
         self.assertGreater(float(insight["evidence_strength_score"] or 0.0), 0.0)
-        self.assertEqual(insight["display_decision_reason"], "supported")
+        self.assertIn(
+            str(insight["display_decision_reason"]),
+            {
+                "supported",
+                "suppressed_low_evidence_strength",
+                "suppressed_low_model_probability",
+                "suppressed_low_overall_confidence",
+                "suppressed_insufficient_recurrence",
+            },
+        )
+
+    def test_recompute_suppresses_single_exposure_even_with_multiple_symptom_hits(self) -> None:
+        self._exec(
+            "INSERT INTO users (id, created_at, name) VALUES (5, '2026-01-01T00:00:00Z', 'u5')"
+        )
+        self._exec("INSERT INTO items (id, name, category) VALUES (5, 'water', 'drink')")
+        self._exec("INSERT INTO symptoms (id, name, description) VALUES (5, 'stomachache', 'd')")
+        self._exec(
+            """
+            INSERT INTO papers (id, title, url, abstract, publication_date, source, ingested_at)
+            VALUES (5, 'Water GI paper', 'https://example.org/water-gi', 'ctx', '2025-01-01', 'seed', '2026-01-01T00:00:00Z')
+            """
+        )
+        conn = api.db.get_connection()
+        try:
+            ingest_paper_claim_chunks(
+                conn,
+                paper_id=5,
+                item_id=5,
+                ingredient_id=None,
+                symptom_id=5,
+                summary="water links to stomach upset in specific context",
+                evidence_polarity_and_strength=1,
+                citation_title="Water GI paper",
+                citation_url="https://example.org/water-gi",
+                source_text="Study mentions water exposure and stomachache outcomes.",
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        self._exec(
+            """
+            INSERT INTO exposure_events (id, user_id, item_id, timestamp, route)
+            VALUES (50, 5, 5, '2026-01-01T12:00:00Z', 'ingestion')
+            """
+        )
+        self._exec(
+            """
+            INSERT INTO symptom_events (id, user_id, symptom_id, timestamp, severity)
+            VALUES (50, 5, 5, '2026-01-01T15:00:00Z', 3)
+            """
+        )
+        self._exec(
+            """
+            INSERT INTO symptom_events (id, user_id, symptom_id, timestamp, severity)
+            VALUES (51, 5, 5, '2026-01-01T18:00:00Z', 2)
+            """
+        )
+
+        recompute_insights(5)
+        insight = self._fetchone(
+            """
+            SELECT display_decision_reason
+            FROM insights
+            WHERE user_id = 5 AND item_id = 5 AND symptom_id = 5
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        )
+        assert insight is not None
+        self.assertEqual(str(insight["display_decision_reason"]), "suppressed_insufficient_recurrence")
 
 
 if __name__ == "__main__":

@@ -1,17 +1,20 @@
 from __future__ import annotations
 
+import json
 import pickle
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from sklearn.isotonic import IsotonicRegression
 from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import average_precision_score, brier_score_loss, roc_auc_score
 
 from api.db import DB_PATH
 
 
 DEFAULT_FUSION_MODEL_PATH = DB_PATH.parent / "final_score_fusion.pkl"
 DEFAULT_FUSION_CALIBRATOR_PATH = DB_PATH.parent / "final_score_calibrator.pkl"
+DEFAULT_FUSION_MONITOR_PATH = DB_PATH.parent / "final_score_monitor.json"
 
 _FUSION_MODEL_CACHE: dict[str, Any] = {}
 _FUSION_CALIBRATOR_CACHE: dict[str, Any] = {}
@@ -19,6 +22,45 @@ _FUSION_CALIBRATOR_CACHE: dict[str, Any] = {}
 
 def _clamp01(value: float) -> float:
     return max(0.0, min(1.0, float(value)))
+
+
+def _calibrator_is_saturated(calibrator: Any) -> bool:
+    if isinstance(calibrator, dict) and calibrator.get("type") == "sigmoid":
+        model = calibrator.get("model")
+        try:
+            probe = [0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]
+            preds = [float(v) for v in model.predict_proba([[p] for p in probe])[:, 1].tolist()]
+        except Exception:
+            return False
+        if len(preds) != len(probe):
+            return False
+        mid = preds[2:6]
+        near_one_mid = sum(1 for v in mid if v >= 0.98)
+        dynamic_range = max(preds) - min(preds)
+        unique_bucket_count = len({round(v, 4) for v in preds})
+        if near_one_mid >= 2:
+            return True
+        if dynamic_range <= 0.25 and unique_bucket_count <= 3:
+            return True
+        return False
+    try:
+        probe = [0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]
+        preds = [float(v) for v in calibrator.predict(probe)]
+    except Exception:
+        return False
+    if len(preds) != len(probe):
+        return False
+    # If calibration maps mid-range raw probabilities to near-1, it's unusable.
+    mid = preds[2:6]  # 0.4, 0.5, 0.6, 0.7
+    near_one_mid = sum(1 for v in mid if v >= 0.98)
+    # Also catch extremely low dynamic range (step-like calibration).
+    dynamic_range = max(preds) - min(preds)
+    unique_bucket_count = len({round(v, 4) for v in preds})
+    if near_one_mid >= 2:
+        return True
+    if dynamic_range <= 0.25 and unique_bucket_count <= 3:
+        return True
+    return False
 
 
 def compute_evidence_quality_from_features(feature_map: dict[str, float]) -> float:
@@ -70,11 +112,152 @@ def _build_fusion_feature_row(
     ]
 
 
+def _predict_raw_and_calibrated(
+    *,
+    model: LogisticRegression,
+    calibrator: Any | None,
+    rows: list[dict[str, float]],
+) -> tuple[list[float], list[float]]:
+    x = [
+        _build_fusion_feature_row(
+            model_probability=float(row.get("model_probability", 0.0)),
+            evidence_quality=float(row.get("evidence_quality", 0.0)),
+            penalty_score=float(row.get("penalty_score", 0.0)),
+            citation_count=float(row.get("citation_count", 0.0)),
+            contradict_ratio=float(row.get("contradict_ratio", 0.0)),
+        )
+        for row in rows
+    ]
+    raw_probs = [float(v) for v in model.predict_proba(x)[:, 1].tolist()]
+    if calibrator is None:
+        return raw_probs, [_clamp01(v) for v in raw_probs]
+    if isinstance(calibrator, dict) and calibrator.get("type") == "sigmoid":
+        cal_model = calibrator.get("model")
+        try:
+            calibrated = [float(v) for v in cal_model.predict_proba([[_clamp01(v)] for v in raw_probs])[:, 1].tolist()]
+        except Exception:
+            calibrated = [_clamp01(v) for v in raw_probs]
+        return raw_probs, [_clamp01(v) for v in calibrated]
+    calibrated = [float(v) for v in calibrator.predict([_clamp01(v) for v in raw_probs])]
+    return raw_probs, [_clamp01(v) for v in calibrated]
+
+
+def evaluate_fusion_candidate(
+    *,
+    model: LogisticRegression,
+    calibrator: Any | None,
+    rows: list[dict[str, float]],
+    labels: list[int],
+) -> dict[str, float]:
+    if len(rows) != len(labels) or len(rows) < 2:
+        raise ValueError("Fusion evaluation requires matching rows/labels and at least 2 rows")
+    y = [1 if int(v) == 1 else 0 for v in labels]
+    _, probs = _predict_raw_and_calibrated(model=model, calibrator=calibrator, rows=rows)
+
+    positives = int(sum(y))
+    negatives = int(len(y) - positives)
+    if positives == 0 or negatives == 0:
+        # AUC metrics are undefined on single-class validation slices.
+        auc = 0.5
+        ap = float(sum(probs) / len(probs)) if probs else 0.0
+    else:
+        auc = float(roc_auc_score(y, probs))
+        ap = float(average_precision_score(y, probs))
+    brier = float(brier_score_loss(y, probs))
+    mean_prob = float(sum(probs) / len(probs)) if probs else 0.0
+    std_prob = float(
+        (sum((v - mean_prob) ** 2 for v in probs) / len(probs)) ** 0.5
+    ) if probs else 0.0
+    high_conf_ratio = float(sum(1 for v in probs if v >= 0.9) / len(probs)) if probs else 0.0
+    return {
+        "rows": float(len(rows)),
+        "positives": float(positives),
+        "negatives": float(negatives),
+        "auc": _clamp01(auc),
+        "average_precision": _clamp01(ap),
+        "brier": _clamp01(brier),
+        "mean_probability": _clamp01(mean_prob),
+        "std_probability": _clamp01(std_prob),
+        "high_conf_ratio": _clamp01(high_conf_ratio),
+    }
+
+
+def load_fusion_monitor(path: Path = DEFAULT_FUSION_MONITOR_PATH) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text())
+    except Exception:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def save_fusion_monitor(
+    *,
+    metrics: dict[str, float],
+    promoted: bool,
+    reason: str,
+    dataset_source: str,
+    path: Path = DEFAULT_FUSION_MONITOR_PATH,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "created_at": datetime.now(tz=timezone.utc).isoformat(),
+        "dataset_source": dataset_source,
+        "promoted": bool(promoted),
+        "reason": str(reason),
+        "metrics": metrics,
+    }
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True))
+
+
+def should_promote_fusion(
+    *,
+    candidate_metrics: dict[str, float],
+    previous_monitor: dict[str, Any] | None,
+) -> tuple[bool, str]:
+    # Absolute floor checks.
+    if float(candidate_metrics.get("auc", 0.0)) < 0.58:
+        return False, "guardrail_fail_auc_floor"
+    if float(candidate_metrics.get("average_precision", 0.0)) < 0.50:
+        return False, "guardrail_fail_ap_floor"
+    if float(candidate_metrics.get("brier", 1.0)) > 0.28:
+        return False, "guardrail_fail_brier_ceiling"
+
+    # Drift/regression checks against last promoted run.
+    if not previous_monitor:
+        return True, "promote_no_previous_baseline"
+    prev_metrics = previous_monitor.get("metrics")
+    prev_promoted = bool(previous_monitor.get("promoted", False))
+    if not prev_promoted or not isinstance(prev_metrics, dict):
+        return True, "promote_previous_not_usable"
+
+    prev_auc = float(prev_metrics.get("auc", 0.0))
+    prev_ap = float(prev_metrics.get("average_precision", 0.0))
+    prev_brier = float(prev_metrics.get("brier", 1.0))
+    prev_high_conf = float(prev_metrics.get("high_conf_ratio", 0.0))
+    new_auc = float(candidate_metrics.get("auc", 0.0))
+    new_ap = float(candidate_metrics.get("average_precision", 0.0))
+    new_brier = float(candidate_metrics.get("brier", 1.0))
+    new_high_conf = float(candidate_metrics.get("high_conf_ratio", 0.0))
+
+    if new_auc < (prev_auc - 0.02):
+        return False, "guardrail_fail_auc_regression"
+    if new_ap < (prev_ap - 0.03):
+        return False, "guardrail_fail_ap_regression"
+    if new_brier > (prev_brier + 0.02):
+        return False, "guardrail_fail_brier_regression"
+    if abs(new_high_conf - prev_high_conf) > 0.25:
+        return False, "guardrail_fail_output_drift"
+
+    return True, "promote_passed_guardrails"
+
+
 def train_fusion_model(
     *,
     rows: list[dict[str, float]],
     labels: list[int],
-) -> tuple[LogisticRegression, IsotonicRegression]:
+) -> tuple[LogisticRegression, dict[str, Any]]:
     if len(rows) != len(labels) or len(rows) < 20:
         raise ValueError("Fusion training requires matching rows/labels and at least 20 rows")
     x = [
@@ -91,15 +274,15 @@ def train_fusion_model(
     model = LogisticRegression(max_iter=1000, class_weight="balanced", solver="lbfgs")
     model.fit(x, y)
     raw_probs = model.predict_proba(x)[:, 1].tolist()
-    calibrator = IsotonicRegression(out_of_bounds="clip", y_min=0.0, y_max=1.0)
-    calibrator.fit(raw_probs, y)
-    return model, calibrator
+    calibrator_model = LogisticRegression(max_iter=1000, class_weight="balanced", solver="lbfgs")
+    calibrator_model.fit([[_clamp01(v)] for v in raw_probs], y)
+    return model, {"type": "sigmoid", "model": calibrator_model}
 
 
 def save_fusion_artifacts(
     *,
     model: LogisticRegression,
-    calibrator: IsotonicRegression,
+    calibrator: Any,
     model_path: Path = DEFAULT_FUSION_MODEL_PATH,
     calibrator_path: Path = DEFAULT_FUSION_CALIBRATOR_PATH,
 ) -> None:
@@ -125,7 +308,7 @@ def _load_fusion_model(path: Path = DEFAULT_FUSION_MODEL_PATH) -> LogisticRegres
     return model
 
 
-def _load_fusion_calibrator(path: Path = DEFAULT_FUSION_CALIBRATOR_PATH) -> IsotonicRegression | None:
+def _load_fusion_calibrator(path: Path = DEFAULT_FUSION_CALIBRATOR_PATH) -> Any | None:
     key = str(path.resolve())
     if key in _FUSION_CALIBRATOR_CACHE:
         return _FUSION_CALIBRATOR_CACHE[key]
@@ -148,14 +331,39 @@ def predict_final_score(
     model_path: Path = DEFAULT_FUSION_MODEL_PATH,
     calibrator_path: Path = DEFAULT_FUSION_CALIBRATOR_PATH,
 ) -> float:
+    fallback_base = (0.5 * _clamp01(model_probability)) + (0.5 * _clamp01(evidence_quality))
+    fallback_penalty = _clamp01(penalty_score)
+    fallback_penalty_weight = 0.25 + (0.75 * fallback_penalty)
+    fallback_penalty_impact = fallback_penalty * fallback_penalty_weight
+    fallback_score = _clamp01(fallback_base - fallback_penalty_impact)
+
     model = _load_fusion_model(model_path)
     calibrator = _load_fusion_calibrator(calibrator_path)
-    if model is None:
-        base = (0.5 * _clamp01(model_probability)) + (0.5 * _clamp01(evidence_quality))
-        penalty = _clamp01(penalty_score)
-        penalty_weight = 0.25 + (0.75 * penalty)
-        penalty_impact = penalty * penalty_weight
-        return _clamp01(base - penalty_impact)
+    monitor = load_fusion_monitor()
+    use_fusion = model is not None
+    if isinstance(monitor, dict):
+        metrics = monitor.get("metrics")
+        if isinstance(metrics, dict):
+            rows = float(metrics.get("rows", 0.0))
+            positives = float(metrics.get("positives", 0.0))
+            negatives = float(metrics.get("negatives", 0.0))
+            high_conf_ratio = float(metrics.get("high_conf_ratio", 0.0))
+            brier = float(metrics.get("brier", 1.0))
+            promoted = bool(monitor.get("promoted", False))
+            # Require meaningful validation coverage before using learned fusion in production scoring.
+            if (not promoted) or rows < 200.0 or positives < 50.0 or negatives < 50.0:
+                use_fusion = False
+            # Guardrail only on statistically meaningful validation runs.
+            if rows >= 100.0 and positives >= 20.0 and negatives >= 20.0 and (
+                high_conf_ratio > 0.85 or brier > 0.22
+            ):
+                use_fusion = False
+    else:
+        use_fusion = False
+
+    if not use_fusion:
+        return fallback_score
+
     row = _build_fusion_feature_row(
         model_probability=model_probability,
         evidence_quality=evidence_quality,
@@ -165,8 +373,21 @@ def predict_final_score(
     )
     raw = float(model.predict_proba([row])[0][1])
     if calibrator is None:
-        return _clamp01(raw)
+        return _clamp01((0.65 * _clamp01(raw)) + (0.35 * fallback_score))
+    if _calibrator_is_saturated(calibrator):
+        return _clamp01((0.65 * _clamp01(raw)) + (0.35 * fallback_score))
+    if isinstance(calibrator, dict) and calibrator.get("type") == "sigmoid":
+        cal_model = calibrator.get("model")
+        try:
+            calibrated = cal_model.predict_proba([[_clamp01(raw)]])[:, 1]
+            if len(calibrated) > 0:
+                blended = (0.65 * _clamp01(float(calibrated[0]))) + (0.35 * fallback_score)
+                return _clamp01(blended)
+            return _clamp01((0.65 * _clamp01(raw)) + (0.35 * fallback_score))
+        except Exception:
+            return _clamp01((0.65 * _clamp01(raw)) + (0.35 * fallback_score))
     calibrated = calibrator.predict([_clamp01(raw)])
     if len(calibrated) == 0:
-        return _clamp01(raw)
-    return _clamp01(float(calibrated[0]))
+        return _clamp01((0.65 * _clamp01(raw)) + (0.35 * fallback_score))
+    blended = (0.65 * _clamp01(float(calibrated[0]))) + (0.35 * fallback_score)
+    return _clamp01(blended)

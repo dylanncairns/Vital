@@ -203,6 +203,8 @@ def _route_context(routes: list[str]) -> str | None:
         return "inhalation exposure"
     if primary == "injection":
         return "injection exposure"
+    if primary in {"proximity_environment", "proximity/environment"}:
+        return "environmental exposure"
     return f"{primary} exposure"
 
 
