@@ -13,8 +13,8 @@ import {
   EventInsightLink,
 } from "../models/events";
 
-// Local server address
-const BASE_URL = "http://127.0.0.1:8000";
+// API base URL (Expo env in production, localhost fallback in dev)
+const BASE_URL = (process.env.EXPO_PUBLIC_API_BASE_URL || "http://127.0.0.1:8000").replace(/\/+$/, "");
 let AUTH_TOKEN: string | null = null;
 
 export type AuthUser = { id: number; username: string; name?: string | null };

@@ -252,3 +252,6 @@
 - added background worker that calls a web search using stored db citation links and removes it from DB if citation does not exist (auditing/verifying body of evidence)
     - does this only when a citation_audit job is queued (see runbook.md)
 - committing here before database migration with alembic
+
+## Commit 21
+- added requirements for deploying and building on Render
