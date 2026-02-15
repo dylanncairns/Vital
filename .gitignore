@@ -23,3 +23,6 @@ data/seed.sql
 
 # Style
 apps/mobile/assets
+
+# venv
+.venv311
