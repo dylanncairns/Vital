@@ -35,6 +35,7 @@ export type CreateEventRequest = {
 export type TextIngestRequest = {
   user_id: number;
   raw_text: string;
+  timezone_offset_minutes?: number;
 };
 
 export type TextIngestResponse = {

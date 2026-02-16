@@ -253,7 +253,7 @@
     - does this only when a citation_audit job is queued (see runbook.md)
 - committing here before database migration with alembic
 
-## Commits 21-28
+## Commits 21-29
 - added requirements for deploying and building on Render
 - configured web support in apps/web (mostly copied from apps/mobile)
 - fixed frontend package handling in package.json
@@ -261,3 +261,6 @@
 - fixed base url handling in client.ts and CORS permission regex
 - added vercel.json to resolve route refreshes to exported html pages while preventing static assets from being rewritten
 - updated readme
+- debugged ingestion pipeline API call for parsing
+    - addressed timezone issues with API local vs user local
+    - reinforced API call context and logic

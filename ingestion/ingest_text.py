@@ -91,6 +91,22 @@ _DATE_TOKEN_RE = re.compile(
 )
 
 _LOCAL_TZ = datetime.now().astimezone().tzinfo or timezone.utc
+
+
+def _tz_from_offset_minutes(offset_minutes: int | None):
+    if offset_minutes is None:
+        return _LOCAL_TZ
+    try:
+        minutes = int(offset_minutes)
+    except (TypeError, ValueError):
+        return _LOCAL_TZ
+    minutes = max(-14 * 60, min(14 * 60, minutes))
+    # JS Date.getTimezoneOffset() semantics: UTC - local.
+    return timezone(-timedelta(minutes=minutes))
+
+
+def _event_has_time(parsed: ParsedEvent) -> bool:
+    return bool(parsed.timestamp or parsed.time_range_start or parsed.time_range_end)
 _LOW_SIGNAL_TOKENS = {
     "in",
     "the",
@@ -166,6 +182,7 @@ def _resolve_anaphoric_daypart_time(
     context_timestamp: str | None,
     context_start: str | None,
     context_end: str | None,
+    local_tz=None,
 ) -> str | None:
     match = _ANAPHORIC_DAYPART_RE.search(text)
     if not match:
@@ -181,7 +198,8 @@ def _resolve_anaphoric_daypart_time(
         anchor = datetime.fromisoformat(anchor_iso.replace("Z", "+00:00"))
     except ValueError:
         return None
-    anchor_local = anchor.astimezone(_LOCAL_TZ)
+    tz = local_tz or _LOCAL_TZ
+    anchor_local = anchor.astimezone(tz)
     resolved_local = _apply_daypart_to_base(anchor_local, match.group(1))
     return resolved_local.astimezone(timezone.utc).isoformat()
 
@@ -213,9 +231,10 @@ def _parse_days_ago(text: str) -> int | None:
     return None
 
 # identify time from within text blob (safe for voice-to-text where user states timestamp)
-def _parse_time(text: str) -> tuple[str | None, str | None, str | None]:
+def _parse_time(text: str, *, local_tz=None) -> tuple[str | None, str | None, str | None]:
     # Parse time words as local user-time intent, then convert to UTC for storage.
-    now = datetime.now().astimezone()
+    tz = local_tz or _LOCAL_TZ
+    now = datetime.now().astimezone(tz)
     lower = text.lower()
 
     days_ago = _parse_days_ago(text)
@@ -621,7 +640,12 @@ def _force_event_type_from_text(event_type: str, text: str) -> str:
     return event_type
 
 
-def _coerce_api_timestamp_to_today_if_time_only(text: str, timestamp: str | None) -> str | None:
+def _coerce_api_timestamp_to_today_if_time_only(
+    text: str,
+    timestamp: str | None,
+    *,
+    local_tz=None,
+) -> str | None:
     if not timestamp:
         return None
     if not _TIME_AT_RE.search(text):
@@ -632,10 +656,11 @@ def _coerce_api_timestamp_to_today_if_time_only(text: str, timestamp: str | None
         parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
     except ValueError:
         return timestamp
-    parsed_local = parsed if parsed.tzinfo is None else parsed.astimezone(_LOCAL_TZ)
+    tz = local_tz or _LOCAL_TZ
+    parsed_local = parsed if parsed.tzinfo is None else parsed.astimezone(tz)
     if parsed_local.tzinfo is None:
-        parsed_local = parsed_local.replace(tzinfo=_LOCAL_TZ)
-    now_local = datetime.now().astimezone(_LOCAL_TZ)
+        parsed_local = parsed_local.replace(tzinfo=tz)
+    now_local = datetime.now().astimezone(tz)
     coerced_local = parsed_local.replace(
         year=now_local.year,
         month=now_local.month,
@@ -648,6 +673,8 @@ def _coerce_api_range_to_today_if_time_only(
     text: str,
     time_range_start: str | None,
     time_range_end: str | None,
+    *,
+    local_tz=None,
 ) -> tuple[str | None, str | None]:
     if not time_range_start and not time_range_end:
         return time_range_start, time_range_end
@@ -656,7 +683,8 @@ def _coerce_api_range_to_today_if_time_only(
     if _DATE_TOKEN_RE.search(text):
         return time_range_start, time_range_end
 
-    now_local = datetime.now().astimezone(_LOCAL_TZ)
+    tz = local_tz or _LOCAL_TZ
+    now_local = datetime.now().astimezone(tz)
 
     def _coerce(value: str | None) -> str | None:
         if not value:
@@ -665,9 +693,9 @@ def _coerce_api_range_to_today_if_time_only(
             parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
         except ValueError:
             return value
-        parsed_local = parsed if parsed.tzinfo is None else parsed.astimezone(_LOCAL_TZ)
+        parsed_local = parsed if parsed.tzinfo is None else parsed.astimezone(tz)
         if parsed_local.tzinfo is None:
-            parsed_local = parsed_local.replace(tzinfo=_LOCAL_TZ)
+            parsed_local = parsed_local.replace(tzinfo=tz)
         coerced_local = parsed_local.replace(
             year=now_local.year,
             month=now_local.month,
@@ -683,27 +711,35 @@ def _override_with_daypart_fixed_time(
     timestamp: str | None,
     time_range_start: str | None,
     time_range_end: str | None,
+    *,
+    local_tz=None,
 ) -> tuple[str | None, str | None, str | None]:
-    fixed_ts, _, _ = _parse_time(text)
+    fixed_ts, _, _ = _parse_time(text, local_tz=local_tz)
     if fixed_ts and _RELATIVE_RE.search(text):
         return fixed_ts, None, None
     return timestamp, time_range_start, time_range_end
 
 
 # First try to call external parser via OpenAI API
-def parse_text_event(text: str) -> ParsedEvent | None:
+def parse_text_event(
+    text: str,
+    *,
+    allow_api: bool = True,
+    local_tz=None,
+) -> ParsedEvent | None:
     # One ParsedEvent cannot safely represent mixed exposure + symptom logs
     if _looks_like_multi_event(text):
         return None
 
-    rules_parsed = parse_with_rules(text)
+    rules_parsed = parse_with_rules(text, local_tz=local_tz)
     if rules_parsed is not None:
         return rules_parsed
 
     # Fallback to API parser only when deterministic parser fails.
-    api_parsed = parse_with_api(text)
-    if api_parsed is not None:
-        return api_parsed
+    if allow_api:
+        api_parsed = parse_with_api(text, local_tz=local_tz)
+        if api_parsed is not None:
+            return api_parsed
     return None
 
 
@@ -771,10 +807,93 @@ def _override_parsed_timestamp(parsed: ParsedEvent, timestamp: str) -> ParsedEve
     )
 
 
-def parse_text_events(text: str) -> list[ParsedEvent]:
-    api_events = parse_with_api_events(text)
-    if api_events:
-        return api_events
+def _normalize_space(text: str) -> str:
+    return " ".join((text or "").strip().lower().split())
+
+
+def _segment_time_anchor(
+    segment: str,
+    *,
+    context_timestamp: str | None,
+    context_start: str | None,
+    context_end: str | None,
+    local_tz=None,
+) -> tuple[str | None, str | None, str | None]:
+    seg_ts, seg_start, seg_end = _parse_time(segment, local_tz=local_tz)
+    anaphoric_seg_ts = _resolve_anaphoric_daypart_time(
+        segment,
+        context_timestamp=context_timestamp,
+        context_start=context_start,
+        context_end=context_end,
+        local_tz=local_tz,
+    )
+    if anaphoric_seg_ts is not None:
+        return anaphoric_seg_ts, None, None
+    return seg_ts, seg_start, seg_end
+
+
+def _apply_context_to_api_events(
+    *,
+    text: str,
+    api_events: list[ParsedEvent],
+    local_tz=None,
+) -> list[ParsedEvent]:
+    if not api_events:
+        return []
+    segments = _split_into_segments(text)
+    if not segments:
+        segments = [text.strip()]
+
+    segment_anchors: list[tuple[str, str | None, str | None, str | None]] = []
+    last_context_timestamp: str | None = None
+    last_context_start: str | None = None
+    last_context_end: str | None = None
+    for segment in segments:
+        seg_ts, seg_start, seg_end = _segment_time_anchor(
+            segment,
+            context_timestamp=last_context_timestamp,
+            context_start=last_context_start,
+            context_end=last_context_end,
+            local_tz=local_tz,
+        )
+        segment_anchors.append((segment, seg_ts, seg_start, seg_end))
+        if any([seg_ts, seg_start, seg_end]):
+            last_context_timestamp = seg_ts
+            last_context_start = seg_start
+            last_context_end = seg_end
+
+    out: list[ParsedEvent] = []
+    for parsed in api_events:
+        if _event_has_time(parsed):
+            out.append(parsed)
+            continue
+        source = _normalize_space(parsed.source_text or "")
+        chosen: tuple[str | None, str | None, str | None] | None = None
+        for segment, seg_ts, seg_start, seg_end in segment_anchors:
+            if source and source in _normalize_space(segment):
+                chosen = (seg_ts, seg_start, seg_end)
+                break
+        if chosen is None:
+            for _segment, seg_ts, seg_start, seg_end in reversed(segment_anchors):
+                if any([seg_ts, seg_start, seg_end]):
+                    chosen = (seg_ts, seg_start, seg_end)
+                    break
+        if chosen is None:
+            out.append(parsed)
+            continue
+        out.append(
+            _apply_time_context(
+                parsed,
+                context_timestamp=chosen[0],
+                context_start=chosen[1],
+                context_end=chosen[2],
+            )
+        )
+    return out
+
+
+def parse_text_events(text: str, *, local_tz=None) -> list[ParsedEvent]:
+    api_events = parse_with_api_events(text, local_tz=local_tz)
 
     segments = _split_into_segments(text)
     if not segments:
@@ -800,19 +919,35 @@ def parse_text_events(text: str) -> list[ParsedEvent]:
         seen_keys.add(key)
         parsed_events.append(parsed)
 
+    def _parse_event_without_api(text_value: str) -> ParsedEvent | None:
+        try:
+            return parse_text_event(text_value, allow_api=False, local_tz=local_tz)
+        except TypeError:
+            # Preserve compatibility with tests that monkeypatch parse_text_event
+            # using the old single-argument signature.
+            return parse_text_event(text_value)
+
+    # Prefer API extraction on long blurbs, but reinforce missing time context using
+    # deterministic segment anchors so API rows do not lose relative daypart intent.
+    if api_events:
+        for parsed in _apply_context_to_api_events(text=text, api_events=api_events, local_tz=local_tz):
+            _append_if_new(parsed)
+            if _event_has_time(parsed):
+                last_context_timestamp = parsed.timestamp
+                last_context_start = parsed.time_range_start
+                last_context_end = parsed.time_range_end
+
     for segment in segments:
-        seg_ts, seg_start, seg_end = _parse_time(segment)
-        anaphoric_seg_ts = _resolve_anaphoric_daypart_time(
+        seg_ts, seg_start, seg_end = _segment_time_anchor(
             segment,
             context_timestamp=last_context_timestamp,
             context_start=last_context_start,
             context_end=last_context_end,
+            local_tz=local_tz,
         )
-        if anaphoric_seg_ts is not None:
-            seg_ts, seg_start, seg_end = anaphoric_seg_ts, None, None
         if any([seg_ts, seg_start, seg_end]):
             last_context_timestamp, last_context_start, last_context_end = seg_ts, seg_start, seg_end
-        parsed = parse_text_event(segment)
+        parsed = _parse_event_without_api(segment)
         segment_lower = segment.lower()
         has_multi_exposure_clause = re.search(
             r"\band\s+for\s+(?:breakfast|lunch|dinner)\b",
@@ -828,8 +963,6 @@ def parse_text_events(text: str) -> list[ParsedEvent]:
         )
 
         if parsed is not None:
-            if anaphoric_seg_ts is not None:
-                parsed = _override_parsed_timestamp(parsed, anaphoric_seg_ts)
             parsed = _apply_time_context(
                 parsed,
                 context_timestamp=seg_ts or last_context_timestamp,
@@ -852,16 +985,17 @@ def parse_text_events(text: str) -> list[ParsedEvent]:
             if part.strip()
         ]
         for clause in clauses:
-            clause_ts, clause_start, clause_end = _parse_time(clause)
+            clause_ts, clause_start, clause_end = _parse_time(clause, local_tz=local_tz)
             anaphoric_clause_ts = _resolve_anaphoric_daypart_time(
                 clause,
                 context_timestamp=seg_ts or last_context_timestamp,
                 context_start=seg_start or last_context_start,
                 context_end=seg_end or last_context_end,
+                local_tz=local_tz,
             )
             if anaphoric_clause_ts is not None:
                 clause_ts, clause_start, clause_end = anaphoric_clause_ts, None, None
-            clause_parsed = parse_text_event(clause)
+            clause_parsed = _parse_event_without_api(clause)
             if clause_parsed is not None:
                 if anaphoric_clause_ts is not None:
                     clause_parsed = _override_parsed_timestamp(clause_parsed, anaphoric_clause_ts)
@@ -879,7 +1013,12 @@ def parse_text_events(text: str) -> list[ParsedEvent]:
     return parsed_events
 
 
-def _api_event_to_parsed_event(entry: dict, full_text: str) -> ParsedEvent | None:
+def _api_event_to_parsed_event(
+    entry: dict,
+    full_text: str,
+    *,
+    local_tz=None,
+) -> ParsedEvent | None:
     source_text = str(entry.get("source_text") or "").strip()
     candidate = str(entry.get("candidate") or "").strip()
     event_type = entry.get("event_type")
@@ -890,7 +1029,7 @@ def _api_event_to_parsed_event(entry: dict, full_text: str) -> ParsedEvent | Non
 
     source_text = source_text.strip()
     cleaned_candidate = _clean_candidate_text(candidate) if candidate else ""
-    timestamp, time_range_start, time_range_end = _parse_time(source_text)
+    timestamp, time_range_start, time_range_end = _parse_time(source_text, local_tz=local_tz)
     time_confidence = entry.get("time_confidence")
     if time_confidence not in {"exact", "approx", "backfilled"}:
         time_confidence = "exact" if timestamp else "approx"
@@ -958,7 +1097,7 @@ def _api_event_to_parsed_event(entry: dict, full_text: str) -> ParsedEvent | Non
     )
 
 
-def parse_with_api_events(text: str) -> list[ParsedEvent]:
+def parse_with_api_events(text: str, *, local_tz=None) -> list[ParsedEvent]:
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         return []
@@ -1014,7 +1153,9 @@ def parse_with_api_events(text: str) -> list[ParsedEvent]:
                     "2) For exposures, candidate must be only the item/place name, no filler words. "
                     "3) For symptoms, candidate must be symptom phrase only. "
                     "4) Never output meaningless candidates like 'in the', 'for', 'when got home'. "
-                    "5) Keep source_text as the smallest phrase needed for that event."
+                    "5) Keep source_text as the smallest phrase needed for that event. "
+                    "6) Preserve any explicit relative time phrase in source_text "
+                    "(e.g., yesterday morning, this evening, last night, two days ago)."
                 ),
             },
             {"role": "user", "content": text},
@@ -1053,7 +1194,7 @@ def parse_with_api_events(text: str) -> list[ParsedEvent]:
     for entry in events[:20]:
         if not isinstance(entry, dict):
             continue
-        parsed = _api_event_to_parsed_event(entry, text)
+        parsed = _api_event_to_parsed_event(entry, text, local_tz=local_tz)
         if parsed is None:
             continue
         key = (
@@ -1072,7 +1213,7 @@ def parse_with_api_events(text: str) -> list[ParsedEvent]:
     return out
 
 
-def parse_with_api(text: str) -> ParsedEvent | None:
+def parse_with_api(text: str, *, local_tz=None) -> ParsedEvent | None:
     # API parsing only enabled when key env var is present
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
@@ -1160,13 +1301,18 @@ def parse_with_api(text: str) -> ParsedEvent | None:
         return None
     event_type = _force_event_type_from_text(event_type, text)
 
-    timestamp = _coerce_api_timestamp_to_today_if_time_only(text, data.get("timestamp"))
+    timestamp = _coerce_api_timestamp_to_today_if_time_only(
+        text,
+        data.get("timestamp"),
+        local_tz=local_tz,
+    )
     time_range_start = data.get("time_range_start")
     time_range_end = data.get("time_range_end")
     time_range_start, time_range_end = _coerce_api_range_to_today_if_time_only(
         text,
         time_range_start,
         time_range_end,
+        local_tz=local_tz,
     )
     timestamp = to_utc_iso(timestamp, strict=False)
     time_range_start = to_utc_iso(time_range_start, strict=False)
@@ -1176,6 +1322,7 @@ def parse_with_api(text: str) -> ParsedEvent | None:
         timestamp,
         time_range_start,
         time_range_end,
+        local_tz=local_tz,
     )
     time_confidence = data.get("time_confidence")
     if time_confidence not in {"exact", "approx", "backfilled"}:
@@ -1234,9 +1381,9 @@ def parse_with_api(text: str) -> ParsedEvent | None:
     )
 
 
-def parse_with_rules(text: str) -> ParsedEvent | None:
+def parse_with_rules(text: str, *, local_tz=None) -> ParsedEvent | None:
     event_type = _guess_event_type(text)
-    timestamp, range_start, range_end = _parse_time(text)
+    timestamp, range_start, range_end = _parse_time(text, local_tz=local_tz)
     time_confidence = "approx" if not timestamp else "exact"
     severity = _parse_severity(text) if event_type == "symptom" else None
 
@@ -1282,8 +1429,14 @@ def parse_with_rules(text: str) -> ParsedEvent | None:
     )
 
 # DB writing logic after parsing
-def ingest_text_event(user_id: int, raw_text: str) -> dict:
-    parsed_events = parse_text_events(raw_text)
+def ingest_text_event(
+    user_id: int,
+    raw_text: str,
+    *,
+    tz_offset_minutes: int | None = None,
+) -> dict:
+    local_tz = _tz_from_offset_minutes(tz_offset_minutes)
+    parsed_events = parse_text_events(raw_text, local_tz=local_tz)
     if not parsed_events:
         insert_raw_event_ingest(user_id, raw_text, "failed", "unparsed")
         return {"status": "queued", "resolution": "pending"}

@@ -150,10 +150,13 @@ export async function createEvent(payload: CreateEventRequest): Promise<CreateEv
 
 // Route used if text blurb entry (later speech-to-text button) - to ingestion pipeline
 export async function ingestTextEvent(payload: TextIngestRequest): Promise<TextIngestResponse> {
+  const withTz = payload.timezone_offset_minutes == null
+    ? { ...payload, timezone_offset_minutes: new Date().getTimezoneOffset() }
+    : payload;
   const res = await fetch(`${BASE_URL}/events/ingest_text`, {
     method: "POST",
     headers: authHeaders({ "Content-Type": "application/json" }),
-    body: JSON.stringify(payload),
+    body: JSON.stringify(withTz),
   });
   if (!res.ok) {
     const text = await res.text();

@@ -9,10 +9,12 @@ class IngestTextRulesTest(unittest.TestCase):
     def setUp(self) -> None:
         self._orig_resolve_symptom_id = ingest_text_mod.resolve_symptom_id
         self._orig_resolve_item_id = ingest_text_mod.resolve_item_id
+        self._orig_parse_with_api_events = ingest_text_mod.parse_with_api_events
 
     def tearDown(self) -> None:
         ingest_text_mod.resolve_symptom_id = self._orig_resolve_symptom_id
         ingest_text_mod.resolve_item_id = self._orig_resolve_item_id
+        ingest_text_mod.parse_with_api_events = self._orig_parse_with_api_events
 
     def test_parse_high_blood_pressure_text_as_symptom(self) -> None:
         ingest_text_mod.resolve_symptom_id = lambda _name: 999
@@ -178,6 +180,46 @@ class IngestTextRulesTest(unittest.TestCase):
         # "that night" should anchor to the same date context as the Feb 11 alcohol clause.
         self.assertEqual(alcohol_ts.date(), poor_sleep_ts.date())
         self.assertLess(poor_sleep_ts, headache_ts)
+
+    def test_parse_text_events_respects_supplied_local_timezone(self) -> None:
+        ingest_text_mod.resolve_symptom_id = lambda _name: 901
+        pacific = ingest_text_mod.timezone(ingest_text_mod.timedelta(hours=-8))
+        rows = ingest_text_mod.parse_text_events(
+            "This morning I had a headache.",
+            local_tz=pacific,
+        )
+        headache = next(row for row in rows if row.event_type == "symptom" and row.symptom_id == 901)
+        self.assertIsNotNone(headache.timestamp)
+        assert headache.timestamp is not None
+        parsed = ingest_text_mod.datetime.fromisoformat(str(headache.timestamp).replace("Z", "+00:00"))
+        self.assertEqual(parsed.astimezone(pacific).hour, 9)
+
+    def test_api_events_without_time_inherit_segment_anchor_time(self) -> None:
+        ingest_text_mod.resolve_symptom_id = lambda _name: 777
+        pacific = ingest_text_mod.timezone(ingest_text_mod.timedelta(hours=-8))
+        ingest_text_mod.parse_with_api_events = lambda _text, local_tz=None: [
+            ingest_text_mod.ParsedEvent(
+                event_type="symptom",
+                timestamp=None,
+                time_range_start=None,
+                time_range_end=None,
+                time_confidence="approx",
+                item_id=None,
+                route=None,
+                symptom_id=777,
+                severity=None,
+                source_text="I high blood pressure",
+            )
+        ]
+        text = "Two days ago, I drank alcohol in the evening. Then yesterday morning I high blood pressure."
+        rows = ingest_text_mod.parse_text_events(text, local_tz=pacific)
+        matched = [row for row in rows if row.event_type == "symptom" and row.symptom_id == 777]
+        self.assertEqual(len(matched), 1)
+        self.assertIsNotNone(matched[0].timestamp)
+        assert matched[0].timestamp is not None
+        parsed = ingest_text_mod.datetime.fromisoformat(str(matched[0].timestamp).replace("Z", "+00:00"))
+        local = parsed.astimezone(pacific)
+        self.assertEqual(local.hour, 9)
 
 
 if __name__ == "__main__":

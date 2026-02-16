@@ -1,5 +1,5 @@
 # Vital
-***A System for longitudinal health symptom and exposure event logging with personalized, evidence-backed insights***
+***A system for longitudinal health symptom and exposure event logging with personalized, evidence-backed insights***
 
 
 ## Clinical and Safety Scope
@@ -23,7 +23,7 @@ Vital is an exposure and symptom logging system that exists to provide insight i
 - Terminal 3 (from repo root): `python3 -m api.job_worker --limit 100 --max-papers-per-query 5`
 - Test suite (from repo root): `PYTHONPATH=. pytest -q`
 
-## How it Works & Repo Structure 
+## How it Works
 - [Backend is built on FastAPI](api/main.py)
     - User authentication and sessions
     - Input validation and routing to normalization endpoints

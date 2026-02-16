@@ -144,6 +144,7 @@ class TimelineEvent(BaseModel):
 class TextIngestIn(BaseModel):
     user_id: Optional[int] = None
     raw_text: str
+    timezone_offset_minutes: Optional[int] = Field(default=None, ge=-840, le=840)
 
 # Response shape for /events/ingest_text
 class TextIngestOut(BaseModel):
@@ -1002,7 +1003,11 @@ def ingest_text(payload: TextIngestIn, authorization: Optional[str] = Header(def
     )
     if not payload.raw_text.strip():
         return {"status": "ignored", "reason": "empty_raw_text"}
-    return ingest_text_event(user_id, payload.raw_text)
+    return ingest_text_event(
+        user_id,
+        payload.raw_text,
+        tz_offset_minutes=payload.timezone_offset_minutes,
+    )
 
 # compute insights for user 
 @app.post("/insights/recompute", response_model=RecomputeInsightsOut)
