@@ -21,8 +21,5 @@ data/rag_sources
 data/central.db 
 data/seed.sql
 
-# Style
-apps/mobile/assets
-
 # venv
 .venv311

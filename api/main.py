@@ -4,6 +4,7 @@ import sqlite3
 from contextlib import asynccontextmanager
 from typing import Optional
 from fastapi import FastAPI, Header, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from api.db import get_connection, initialize_database
@@ -74,6 +75,28 @@ app = FastAPI(
     title="Vital API",
     version="0.1.0",
     lifespan=_lifespan,
+)
+
+def _cors_allow_origins() -> list[str]:
+    configured = os.getenv("CORS_ALLOW_ORIGINS", "")
+    if configured.strip():
+        return [origin.strip().rstrip("/") for origin in configured.split(",") if origin.strip()]
+    return [
+        "http://localhost:8081",
+        "http://127.0.0.1:8081",
+        "http://localhost:19006",
+        "http://127.0.0.1:19006",
+    ]
+
+_cors_allow_origin_regex = os.getenv("CORS_ALLOW_ORIGIN_REGEX", "").strip() or None
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_allow_origins(),
+    allow_origin_regex=_cors_allow_origin_regex,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Validate / standardize input JSON payload format for /events

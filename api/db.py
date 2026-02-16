@@ -1,12 +1,15 @@
 import sqlite3
+import os
 from pathlib import Path
 from typing import Callable
 
-DB_PATH = Path(__file__).resolve().parent.parent / "data" / "central.db"
+_DEFAULT_DB_PATH = Path(__file__).resolve().parent.parent / "data" / "central.db"
+DB_PATH = Path(os.getenv("DB_PATH", str(_DEFAULT_DB_PATH)))
 SCHEMA_PATH = Path(__file__).resolve().parent.parent / "data" / "schema.sql"
 
 # connect to sqlite DB - will migrate to postgres in future git
 def get_connection():
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL;")
