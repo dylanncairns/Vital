@@ -14,7 +14,9 @@ import {
 } from "../models/events";
 
 // API base URL (Expo env in production, localhost fallback in dev)
-const BASE_URL = (process.env.EXPO_PUBLIC_API_BASE_URL || "http://127.0.0.1:8000").replace(/\/+$/, "");
+const envBaseUrl = ((globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env
+  ?.EXPO_PUBLIC_API_BASE_URL || "http://127.0.0.1:8000");
+const BASE_URL = envBaseUrl.replace(/\/+$/, "");
 let AUTH_TOKEN: string | null = null;
 
 export type AuthUser = { id: number; username: string; name?: string | null };
