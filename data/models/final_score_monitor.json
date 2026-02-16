@@ -1,5 +1,5 @@
 {
-  "created_at": "2026-02-14T09:02:17.137796+00:00",
+  "created_at": "2026-02-16T20:02:21.992610+00:00",
   "dataset_source": "hybrid",
   "guardrails": {
     "runtime_max_high_conf_ratio": 0.9,
@@ -44,39 +44,56 @@
       },
       "promoted": true,
       "reason": "promote_passed_guardrails"
+    },
+    {
+      "created_at": "2026-02-16T20:02:21.992610+00:00",
+      "dataset_source": "hybrid",
+      "metrics": {
+        "auc": 1.0,
+        "average_precision": 1.0,
+        "brier": 5.292108637619439e-05,
+        "high_conf_ratio": 0.5333333333333333,
+        "mean_probability": 0.5328322835258674,
+        "negatives": 35.0,
+        "positives": 40.0,
+        "rows": 75.0,
+        "std_probability": 0.4916656987936307
+      },
+      "promoted": true,
+      "reason": "promote_passed_guardrails"
     }
   ],
   "metrics": {
     "auc": 1.0,
-    "average_precision": 0.9999999999999998,
-    "brier": 0.0054622595498336505,
-    "high_conf_ratio": 0.4921875,
-    "mean_probability": 0.4927524011988609,
-    "negatives": 65.0,
-    "positives": 63.0,
-    "rows": 128.0,
-    "std_probability": 0.48842900201148715
+    "average_precision": 1.0,
+    "brier": 5.292108637619439e-05,
+    "high_conf_ratio": 0.5333333333333333,
+    "mean_probability": 0.5328322835258674,
+    "negatives": 35.0,
+    "positives": 40.0,
+    "rows": 75.0,
+    "std_probability": 0.4916656987936307
   },
   "promoted": true,
   "reason": "promote_passed_guardrails",
   "versions": {
     "decision_thresholds": {
       "exists": true,
-      "mtime": "2026-02-14T09:02:02.732280+00:00",
-      "sha256": "f07236a9c1163721d6a4d67d65ded11b793716ee296b75deccebb1fd86e760b5",
-      "size_bytes": 772
+      "mtime": "2026-02-16T20:02:21.821703+00:00",
+      "sha256": "30a2eb14aa4b9cba7abf94f5ecb9add68c090f8f422b167e50a9b10768a06a68",
+      "size_bytes": 771
     },
     "fusion_calibrator": {
       "exists": true,
-      "mtime": "2026-02-14T09:02:17.089759+00:00",
-      "sha256": "54e69113fad74a426c1f257b0413096e49ef4211f688103a2e96754e68b74cc4",
-      "size_bytes": 714
+      "mtime": "2026-02-16T20:02:21.992095+00:00",
+      "sha256": "8110e9e3dc081b9fcd94af82ce8c3c6d54c3919f7a98cb60f586f6117529decd",
+      "size_bytes": 752
     },
     "fusion_model": {
       "exists": true,
-      "mtime": "2026-02-14T09:02:01.919226+00:00",
-      "sha256": "2990957c45fa3ff8dfb2aeb4ec0c897dd5fab12922a967f05e26841c4f6fbb08",
-      "size_bytes": 28159
+      "mtime": "2026-02-16T20:02:21.614965+00:00",
+      "sha256": "e8fd5c1958f32e63622eb0ca03fbca484edc1a138755408302f79c6786f1f2fe",
+      "size_bytes": 21213
     },
     "score_guardrails": {
       "exists": true,

@@ -122,6 +122,17 @@ export async function updateMe(payload: { name: string }): Promise<AuthUser> {
   return res.json();
 }
 
+export async function deleteMe(): Promise<void> {
+  const res = await fetch(`${BASE_URL}/auth/me`, {
+    method: "DELETE",
+    headers: authHeaders(),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Failed to delete account: ${res.status} ${text}`);
+  }
+}
+
 // Request to GET/events with user id specified
 export async function fetchEvents(userId: number): Promise<TimelineEvent[]> {
   const res = await fetch(`${BASE_URL}/events?user_id=${userId}`, {

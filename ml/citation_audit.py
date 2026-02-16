@@ -62,7 +62,7 @@ def audit_claim_citations(
           AND TRIM(citation_url) <> ''
         GROUP BY citation_url
         ORDER BY claim_count DESC, citation_url ASC
-        LIMIT ?
+        LIMIT %s
         """,
         (max(1, int(limit)),),
     ).fetchall()
@@ -84,7 +84,7 @@ def audit_claim_citations(
     deleted_claims = 0
     deleted_papers = 0
     if delete_missing and missing_urls:
-        placeholders = ",".join("?" for _ in missing_urls)
+        placeholders = ",".join("%s" for _ in missing_urls)
         deleted_claims = int(
             conn.execute(
                 f"DELETE FROM claims WHERE citation_url IN ({placeholders})",
@@ -115,4 +115,3 @@ def audit_claim_citations(
         "deleted_papers": deleted_papers,
         "errors": errors,
     }
-

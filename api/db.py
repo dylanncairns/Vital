@@ -1,38 +1,72 @@
-import sqlite3
 import os
 from pathlib import Path
 from typing import Callable
 
-_DEFAULT_DB_PATH = Path(__file__).resolve().parent.parent / "data" / "central.db"
-DB_PATH = Path(os.getenv("DB_PATH", str(_DEFAULT_DB_PATH)))
+from psycopg import Connection, connect
+from psycopg.rows import dict_row
+
 SCHEMA_PATH = Path(__file__).resolve().parent.parent / "data" / "schema.sql"
 
-# connect to sqlite DB - will migrate to postgres in future git
+# connect to postgres DB
 def get_connection():
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.execute("PRAGMA foreign_keys = ON")
+    database_url = os.getenv("DATABASE_URL", "").strip()
+    if not database_url:
+        raise RuntimeError("DATABASE_URL is required")
+    conn = connect(database_url, row_factory=dict_row)
     return conn
 
 # test table presence before altering
-def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+def _table_exists(conn: Connection, table_name: str) -> bool:
     row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        """
+        SELECT 1
+        FROM information_schema.tables
+        WHERE table_schema = 'public'
+          AND table_name = %s
+        LIMIT 1
+        """,
         (table_name,),
     ).fetchone()
     return row is not None
 
 # prevents second startup after migration from causing duplicate column errors
-def _column_exists(conn: sqlite3.Connection, table_name: str, column_name: str) -> bool:
+def _column_exists(conn: Connection, table_name: str, column_name: str) -> bool:
     if not _table_exists(conn, table_name):
         return False
-    rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
-    return any(row["name"] == column_name for row in rows)
+    row = conn.execute(
+        """
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = %s
+          AND column_name = %s
+        LIMIT 1
+        """,
+        (table_name, column_name),
+    ).fetchone()
+    return row is not None
+
+
+def _column_data_type(conn: Connection, table_name: str, column_name: str) -> str | None:
+    if not _table_exists(conn, table_name):
+        return None
+    row = conn.execute(
+        """
+        SELECT data_type
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = %s
+          AND column_name = %s
+        LIMIT 1
+        """,
+        (table_name, column_name),
+    ).fetchone()
+    if row is None:
+        return None
+    return str(row["data_type"]).lower()
 
 # prepare for rag evidence/citation retrival
-def _migration_001_insight_and_rag_scaffolding(conn: sqlite3.Connection) -> None:
+def _migration_001_insight_and_rag_scaffolding(conn: Connection) -> None:
     # Expand insights for decision transparency and API payloads
     insight_columns = [
         ("evidence_summary", "TEXT"),
@@ -74,7 +108,7 @@ def _migration_001_insight_and_rag_scaffolding(conn: sqlite3.Connection) -> None
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS retrieval_runs (
-            id INTEGER NOT NULL PRIMARY KEY,
+            id BIGSERIAL PRIMARY KEY,
             user_id INTEGER NOT NULL,
             item_id INTEGER NOT NULL,
             symptom_id INTEGER NOT NULL,
@@ -102,7 +136,7 @@ def _migration_001_insight_and_rag_scaffolding(conn: sqlite3.Connection) -> None
     )
 
 # to add missing columns for existing DBs
-def _migration_002_cooccurrence_semantics(conn: sqlite3.Connection) -> None:
+def _migration_002_cooccurrence_semantics(conn: Connection) -> None:
     derived_feature_columns = [
         ("cooccurrence_unique_symptom_count", "INTEGER"),
         ("pair_density", "REAL"),
@@ -114,7 +148,7 @@ def _migration_002_cooccurrence_semantics(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS derived_features_ingredients (
-            id INTEGER NOT NULL PRIMARY KEY,
+            id BIGSERIAL PRIMARY KEY,
             user_id INTEGER NOT NULL,
             ingredient_id INTEGER NOT NULL,
             symptom_id INTEGER NOT NULL,
@@ -136,20 +170,27 @@ def _migration_002_cooccurrence_semantics(conn: sqlite3.Connection) -> None:
     )
 
 
-def _claims_requires_item_support_rebuild(conn: sqlite3.Connection) -> bool:
+def _claims_requires_item_support_rebuild(conn: Connection) -> bool:
     if not _table_exists(conn, "claims"):
         return False
-    rows = conn.execute("PRAGMA table_info(claims)").fetchall()
-    has_item_id = any(row["name"] == "item_id" for row in rows)
+    rows = conn.execute(
+        """
+        SELECT column_name, is_nullable
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'claims'
+        """
+    ).fetchall()
+    has_item_id = any(row["column_name"] == "item_id" for row in rows)
     ingredient_notnull = False
     for row in rows:
-        if row["name"] == "ingredient_id":
-            ingredient_notnull = bool(row["notnull"])
+        if row["column_name"] == "ingredient_id":
+            ingredient_notnull = row["is_nullable"] == "NO"
             break
     return (not has_item_id) or ingredient_notnull
 
 
-def _migration_003_claims_item_support(conn: sqlite3.Connection) -> None:
+def _migration_003_claims_item_support(conn: Connection) -> None:
     if not _claims_requires_item_support_rebuild(conn):
         conn.execute(
             """
@@ -162,7 +203,7 @@ def _migration_003_claims_item_support(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
         CREATE TABLE claims_new (
-            id INTEGER NOT NULL PRIMARY KEY,
+            id BIGSERIAL PRIMARY KEY,
             item_id INTEGER,
             ingredient_id INTEGER,
             symptom_id INTEGER NOT NULL,
@@ -177,7 +218,13 @@ def _migration_003_claims_item_support(conn: sqlite3.Connection) -> None:
             citation_title TEXT,
             citation_url TEXT,
             citation_snippet TEXT,
-            evidence_polarity_and_strength INTEGER,
+            study_design TEXT,
+            study_quality_score REAL,
+            population_match REAL,
+            temporality_match REAL,
+            risk_of_bias REAL,
+            llm_confidence REAL,
+            evidence_polarity_and_strength DOUBLE PRECISION,
             FOREIGN KEY (item_id) REFERENCES items(id),
             FOREIGN KEY (ingredient_id) REFERENCES ingredients(id),
             FOREIGN KEY (symptom_id) REFERENCES symptoms(id),
@@ -190,12 +237,16 @@ def _migration_003_claims_item_support(conn: sqlite3.Connection) -> None:
         INSERT INTO claims_new (
             id, ingredient_id, symptom_id, paper_id, claim_type, summary,
             chunk_index, chunk_text, chunk_hash, embedding_model, embedding_vector,
-            citation_title, citation_url, citation_snippet, evidence_polarity_and_strength
+            citation_title, citation_url, citation_snippet,
+            study_design, study_quality_score, population_match, temporality_match, risk_of_bias, llm_confidence,
+            evidence_polarity_and_strength
         )
         SELECT
             id, ingredient_id, symptom_id, paper_id, claim_type, summary,
             chunk_index, chunk_text, chunk_hash, embedding_model, embedding_vector,
-            citation_title, citation_url, citation_snippet, evidence_polarity_and_strength
+            citation_title, citation_url, citation_snippet,
+            study_design, study_quality_score, population_match, temporality_match, risk_of_bias, llm_confidence,
+            evidence_polarity_and_strength
         FROM claims
         """
     )
@@ -215,8 +266,8 @@ def _migration_003_claims_item_support(conn: sqlite3.Connection) -> None:
     )
 
 
-def _apply_migrations(conn: sqlite3.Connection) -> None:
-    migrations: list[Callable[[sqlite3.Connection], None]] = [
+def _apply_migrations(conn: Connection) -> None:
+    migrations: list[Callable[[Connection], None]] = [
         _migration_001_insight_and_rag_scaffolding,
         _migration_002_cooccurrence_semantics,
         _migration_003_claims_item_support,
@@ -229,16 +280,19 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
         _migration_010_insight_rejections,
         _migration_011_insight_source_ingredient,
         _migration_012_combo_candidates,
+        _migration_013_rag_source_documents,
+        _migration_014_claims_polarity_float,
+        _migration_015_claims_evidence_metadata_columns,
     ]
     for migration in migrations:
         migration(conn)
 
 
-def _migration_004_background_jobs(conn: sqlite3.Connection) -> None:
+def _migration_004_background_jobs(conn: Connection) -> None:
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS background_jobs (
-            id INTEGER NOT NULL PRIMARY KEY,
+            id BIGSERIAL PRIMARY KEY,
             user_id INTEGER NOT NULL,
             job_type TEXT NOT NULL,
             item_id INTEGER,
@@ -269,7 +323,7 @@ def _migration_004_background_jobs(conn: sqlite3.Connection) -> None:
     )
 
 
-def _migration_005_model_retrain_state(conn: sqlite3.Connection) -> None:
+def _migration_005_model_retrain_state(conn: Connection) -> None:
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS model_retrain_state (
@@ -285,16 +339,16 @@ def _migration_005_model_retrain_state(conn: sqlite3.Connection) -> None:
             """
             INSERT INTO model_retrain_state (
                 id, last_trained_total_events, last_enqueued_total_events, updated_at
-            ) VALUES (1, 0, 0, datetime('now'))
+            ) VALUES (1, 0, 0, NOW())
             """
         )
 
 
-def _migration_006_recurring_exposure_rules(conn: sqlite3.Connection) -> None:
+def _migration_006_recurring_exposure_rules(conn: Connection) -> None:
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS recurring_exposure_rules (
-            id INTEGER NOT NULL PRIMARY KEY,
+            id BIGSERIAL PRIMARY KEY,
             user_id INTEGER NOT NULL,
             item_id INTEGER NOT NULL,
             route TEXT NOT NULL,
@@ -319,11 +373,11 @@ def _migration_006_recurring_exposure_rules(conn: sqlite3.Connection) -> None:
     )
 
 
-def _migration_007_insight_event_links(conn: sqlite3.Connection) -> None:
+def _migration_007_insight_event_links(conn: Connection) -> None:
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS insight_event_links (
-            id INTEGER NOT NULL PRIMARY KEY,
+            id BIGSERIAL PRIMARY KEY,
             user_id INTEGER NOT NULL,
             insight_id INTEGER NOT NULL,
             event_type TEXT NOT NULL CHECK (event_type IN ('exposure', 'symptom')),
@@ -349,11 +403,11 @@ def _migration_007_insight_event_links(conn: sqlite3.Connection) -> None:
     )
 
 
-def _migration_008_insight_verifications(conn: sqlite3.Connection) -> None:
+def _migration_008_insight_verifications(conn: Connection) -> None:
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS insight_verifications (
-            id INTEGER NOT NULL PRIMARY KEY,
+            id BIGSERIAL PRIMARY KEY,
             user_id INTEGER NOT NULL,
             item_id INTEGER NOT NULL,
             symptom_id INTEGER NOT NULL,
@@ -375,7 +429,7 @@ def _migration_008_insight_verifications(conn: sqlite3.Connection) -> None:
     )
 
 
-def _migration_009_auth(conn: sqlite3.Connection) -> None:
+def _migration_009_auth(conn: Connection) -> None:
     if not _column_exists(conn, "users", "username"):
         conn.execute("ALTER TABLE users ADD COLUMN username TEXT")
     if not _column_exists(conn, "users", "password_hash"):
@@ -390,7 +444,7 @@ def _migration_009_auth(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS auth_sessions (
-            id INTEGER NOT NULL PRIMARY KEY,
+            id BIGSERIAL PRIMARY KEY,
             user_id INTEGER NOT NULL,
             token TEXT NOT NULL UNIQUE,
             created_at TEXT NOT NULL,
@@ -414,17 +468,17 @@ def _migration_009_auth(conn: sqlite3.Connection) -> None:
     )
 
 
-def _migration_010_insight_rejections(conn: sqlite3.Connection) -> None:
+def _migration_010_insight_rejections(conn: Connection) -> None:
     if not _column_exists(conn, "insight_verifications", "rejected"):
         conn.execute("ALTER TABLE insight_verifications ADD COLUMN rejected INTEGER NOT NULL DEFAULT 0")
 
 
-def _migration_011_insight_source_ingredient(conn: sqlite3.Connection) -> None:
+def _migration_011_insight_source_ingredient(conn: Connection) -> None:
     if not _column_exists(conn, "insights", "source_ingredient_id"):
         conn.execute("ALTER TABLE insights ADD COLUMN source_ingredient_id INTEGER")
 
 
-def _migration_012_combo_candidates(conn: sqlite3.Connection) -> None:
+def _migration_012_combo_candidates(conn: Connection) -> None:
     combo_columns = [
         ("secondary_item_id", "INTEGER"),
         ("is_combo", "INTEGER NOT NULL DEFAULT 0"),
@@ -438,7 +492,7 @@ def _migration_012_combo_candidates(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS derived_features_combos (
-            id INTEGER NOT NULL PRIMARY KEY,
+            id BIGSERIAL PRIMARY KEY,
             user_id INTEGER NOT NULL,
             combo_key TEXT NOT NULL,
             item_ids_json TEXT NOT NULL,
@@ -471,14 +525,83 @@ def _migration_012_combo_candidates(conn: sqlite3.Connection) -> None:
         """
     )
 
+
+def _migration_013_rag_source_documents(conn: Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS rag_source_documents (
+            id BIGSERIAL PRIMARY KEY,
+            user_id INTEGER,
+            query TEXT,
+            original_query TEXT,
+            filename TEXT NOT NULL,
+            title TEXT NOT NULL,
+            url TEXT,
+            publication_date TEXT,
+            source TEXT,
+            abstract TEXT,
+            payload_json TEXT NOT NULL,
+            source_hash TEXT NOT NULL UNIQUE,
+            created_at TEXT,
+            updated_at TEXT,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_rag_source_documents_user_created
+        ON rag_source_documents(user_id, created_at)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_rag_source_documents_hash
+        ON rag_source_documents(source_hash)
+        """
+    )
+
+
+def _migration_014_claims_polarity_float(conn: Connection) -> None:
+    if not _column_exists(conn, "claims", "evidence_polarity_and_strength"):
+        return
+    data_type = _column_data_type(conn, "claims", "evidence_polarity_and_strength")
+    if data_type in {"smallint", "integer", "bigint"}:
+        conn.execute(
+            """
+            ALTER TABLE claims
+            ALTER COLUMN evidence_polarity_and_strength TYPE DOUBLE PRECISION
+            USING evidence_polarity_and_strength::double precision
+            """
+        )
+
+
+def _migration_015_claims_evidence_metadata_columns(conn: Connection) -> None:
+    claim_columns = [
+        ("study_design", "TEXT"),
+        ("study_quality_score", "REAL"),
+        ("population_match", "REAL"),
+        ("temporality_match", "REAL"),
+        ("risk_of_bias", "REAL"),
+        ("llm_confidence", "REAL"),
+    ]
+    for column_name, column_type in claim_columns:
+        if not _column_exists(conn, "claims", column_name):
+            conn.execute(f"ALTER TABLE claims ADD COLUMN {column_name} {column_type}")
+
+
+def _execute_script(conn: Connection, script: str) -> None:
+    with conn.cursor() as cursor:
+        cursor.execute(script)
+
+
 def initialize_database():
-    db_exists = DB_PATH.exists()
     conn = get_connection()
     try:
-        if not db_exists:
+        if not _table_exists(conn, "users"):
             with open(SCHEMA_PATH, "r") as f:
                 schema_sql = f.read()
-            conn.executescript(schema_sql)
+            _execute_script(conn, schema_sql)
         _apply_migrations(conn)
         conn.commit()
     finally:

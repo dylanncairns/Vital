@@ -290,6 +290,7 @@ export default function TimelineScreen() {
             <Text style={styles.headerTitle}>{timelineHeaderTitle}</Text>
           </View>
         }
+        ListEmptyComponent={<Text style={styles.emptyText}>Add events to build your timeline.</Text>}
         renderItem={({ item }) => {
           if (item.type === "date") {
             return (

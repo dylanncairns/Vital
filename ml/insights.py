@@ -438,7 +438,7 @@ def _fetch_exposure_ingredients(user_id: int) -> dict[int, set[int]]:
             SELECT e.id AS exposure_event_id, x.ingredient_id AS ingredient_id
             FROM exposure_events e
             JOIN exposure_expansions x ON x.exposure_event_id = e.id
-            WHERE e.user_id = ?
+            WHERE e.user_id = %s
               AND x.ingredient_id IS NOT NULL
             """,
             (user_id,),
@@ -470,7 +470,7 @@ def _fetch_exposures(user_id: int) -> list[ExposureEvent]:
                 CASE WHEN COUNT(x.id) > 0 THEN 1 ELSE 0 END AS has_expansion
             FROM exposure_events e
             LEFT JOIN exposure_expansions x ON x.exposure_event_id = e.id
-            WHERE e.user_id = ?
+            WHERE e.user_id = %s
               AND COALESCE(e.timestamp, e.time_range_start) IS NOT NULL
             GROUP BY e.id
             ORDER BY event_ts
@@ -521,7 +521,7 @@ def _fetch_symptoms(user_id: int) -> list[SymptomEvent]:
                 s.severity AS severity,
                 s.time_confidence AS time_confidence
             FROM symptom_events s
-            WHERE s.user_id = ?
+            WHERE s.user_id = %s
               AND COALESCE(s.timestamp, s.time_range_start) IS NOT NULL
             ORDER BY event_ts
             """,
@@ -789,14 +789,14 @@ def recompute_insights(
         exposure_by_id = {int(event.event_id): event for event in exposures}
 
         if target_pairs is None:
-            conn.execute("DELETE FROM insights WHERE user_id = ?", (user_id,))
-            conn.execute("DELETE FROM derived_features_ingredients WHERE user_id = ?", (user_id,))
-            conn.execute("DELETE FROM derived_features_combos WHERE user_id = ?", (user_id,))
+            conn.execute("DELETE FROM insights WHERE user_id = %s", (user_id,))
+            conn.execute("DELETE FROM derived_features_ingredients WHERE user_id = %s", (user_id,))
+            conn.execute("DELETE FROM derived_features_combos WHERE user_id = %s", (user_id,))
             verification_rows = conn.execute(
                 """
                 SELECT item_id, symptom_id
                 FROM insight_verifications
-                WHERE user_id = ?
+                WHERE user_id = %s
                 """,
                 (user_id,),
             ).fetchall()
@@ -807,30 +807,30 @@ def recompute_insights(
                 conn.execute(
                     """
                     DELETE FROM insight_verifications
-                    WHERE user_id = ? AND item_id = ? AND symptom_id = ?
+                    WHERE user_id = %s AND item_id = %s AND symptom_id = %s
                     """,
                     (user_id, pair[0], pair[1]),
                 )
         else:
             for item_id, symptom_id in sorted(target_pairs):
                 conn.execute(
-                    "DELETE FROM insights WHERE user_id = ? AND item_id = ? AND symptom_id = ?",
+                    "DELETE FROM insights WHERE user_id = %s AND item_id = %s AND symptom_id = %s",
                     (user_id, item_id, symptom_id),
                 )
                 conn.execute(
-                    "DELETE FROM derived_features WHERE user_id = ? AND item_id = ? AND symptom_id = ?",
+                    "DELETE FROM derived_features WHERE user_id = %s AND item_id = %s AND symptom_id = %s",
                     (user_id, item_id, symptom_id),
                 )
                 conn.execute(
                     """
                     DELETE FROM derived_features_combos
-                    WHERE user_id = ? AND symptom_id = ?
-                      AND (combo_key LIKE ? OR combo_key LIKE ?)
+                    WHERE user_id = %s AND symptom_id = %s
+                      AND (combo_key LIKE %s OR combo_key LIKE %s)
                     """,
                     (user_id, symptom_id, f"{item_id}:%", f"%:{item_id}"),
                 )
                 conn.execute(
-                    "DELETE FROM retrieval_runs WHERE user_id = ? AND item_id = ? AND symptom_id = ?",
+                    "DELETE FROM retrieval_runs WHERE user_id = %s AND item_id = %s AND symptom_id = %s",
                     (user_id, item_id, symptom_id),
                 )
             stale_target_pairs = {
@@ -840,7 +840,7 @@ def recompute_insights(
                 conn.execute(
                     """
                     DELETE FROM insight_verifications
-                    WHERE user_id = ? AND item_id = ? AND symptom_id = ?
+                    WHERE user_id = %s AND item_id = %s AND symptom_id = %s
                     """,
                     (user_id, item_id, symptom_id),
                 )
@@ -913,7 +913,7 @@ def recompute_insights(
                     cooccurrence_count, cooccurrence_unique_symptom_count, pair_density,
                     exposure_count_7d, symptom_count_7d, severity_avg_after, computed_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT(user_id, item_id, symptom_id)
                 DO UPDATE SET
                     time_gap_min_minutes = excluded.time_gap_min_minutes,
@@ -1142,7 +1142,8 @@ def recompute_insights(
                     evidence_summary, evidence_strength_score, evidence_quality_score,
                     model_probability, penalty_score, display_decision_reason, citations_json, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
                 """,
                 (
                     candidate.user_id,
@@ -1162,21 +1163,22 @@ def recompute_insights(
                     now_iso,
                 ),
             )
-            insight_id = int(insight_cursor.lastrowid)
+            insight_id = int(insight_cursor.fetchone()["id"])
             event_link_rows: list[tuple[int, int, str, int, str]] = []
             for exposure_event_id in sorted(candidate.exposure_event_ids):
                 event_link_rows.append((candidate.user_id, insight_id, "exposure", int(exposure_event_id), now_iso))
             for symptom_event_id in sorted(candidate.symptom_event_ids):
                 event_link_rows.append((candidate.user_id, insight_id, "symptom", int(symptom_event_id), now_iso))
             if event_link_rows:
-                conn.executemany(
-                    """
-                    INSERT INTO insight_event_links (user_id, insight_id, event_type, event_id, created_at)
-                    VALUES (?, ?, ?, ?, ?)
-                    ON CONFLICT(insight_id, event_type, event_id) DO NOTHING
-                    """,
-                    event_link_rows,
-                )
+                with conn.cursor() as cursor:
+                    cursor.executemany(
+                        """
+                        INSERT INTO insight_event_links (user_id, insight_id, event_type, event_id, created_at)
+                        VALUES (%s, %s, %s, %s, %s)
+                        ON CONFLICT(insight_id, event_type, event_id) DO NOTHING
+                        """,
+                        event_link_rows,
+                    )
             
             # allows future retrival system to understand candidate context
             query_key = (
@@ -1188,7 +1190,7 @@ def recompute_insights(
             conn.execute(
                 """
                 INSERT INTO retrieval_runs (user_id, item_id, symptom_id, query_key, top_k, retrieved_count, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     candidate.user_id,
@@ -1313,7 +1315,8 @@ def recompute_insights(
                         evidence_summary, evidence_strength_score, evidence_quality_score,
                         model_probability, penalty_score, display_decision_reason, citations_json, created_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    RETURNING id
                     """,
                     (
                         candidate.user_id,
@@ -1333,7 +1336,7 @@ def recompute_insights(
                         now_iso,
                     ),
                 )
-                ingredient_insight_id = int(ingredient_cursor.lastrowid)
+                ingredient_insight_id = int(ingredient_cursor.fetchone()["id"])
                 ingredient_event_links: list[tuple[int, int, str, int, str]] = []
                 for exposure_event_id in sorted(candidate.exposure_event_ids):
                     if int(ingredient_id) not in exposure_ingredients.get(exposure_event_id, set()):
@@ -1346,14 +1349,15 @@ def recompute_insights(
                         (candidate.user_id, ingredient_insight_id, "symptom", int(symptom_event_id), now_iso)
                     )
                 if ingredient_event_links:
-                    conn.executemany(
-                        """
-                        INSERT INTO insight_event_links (user_id, insight_id, event_type, event_id, created_at)
-                        VALUES (?, ?, ?, ?, ?)
-                        ON CONFLICT(insight_id, event_type, event_id) DO NOTHING
-                        """,
-                        ingredient_event_links,
-                    )
+                    with conn.cursor() as cursor:
+                        cursor.executemany(
+                            """
+                            INSERT INTO insight_event_links (user_id, insight_id, event_type, event_id, created_at)
+                            VALUES (%s, %s, %s, %s, %s)
+                            ON CONFLICT(insight_id, event_type, event_id) DO NOTHING
+                            """,
+                            ingredient_event_links,
+                        )
                 inserted += 1
 
         for combo in combo_aggregates.values():
@@ -1412,7 +1416,7 @@ def recompute_insights(
                     cooccurrence_count, cooccurrence_unique_symptom_count, pair_density,
                     exposure_count_7d, symptom_count_7d, severity_avg_after, computed_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT(user_id, combo_key, symptom_id)
                 DO UPDATE SET
                     item_ids_json = excluded.item_ids_json,
@@ -1645,7 +1649,8 @@ def recompute_insights(
                     evidence_summary, evidence_strength_score, evidence_quality_score,
                     model_probability, penalty_score, display_decision_reason, citations_json, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
                 """,
                 (
                     combo.user_id,
@@ -1669,25 +1674,26 @@ def recompute_insights(
                     now_iso,
                 ),
             )
-            combo_insight_id = int(insight_cursor.lastrowid)
+            combo_insight_id = int(insight_cursor.fetchone()["id"])
             combo_event_links: list[tuple[int, int, str, int, str]] = []
             for exposure_event_id in sorted(combo.exposure_event_ids):
                 combo_event_links.append((combo.user_id, combo_insight_id, "exposure", int(exposure_event_id), now_iso))
             for symptom_event_id in sorted(combo.symptom_event_ids):
                 combo_event_links.append((combo.user_id, combo_insight_id, "symptom", int(symptom_event_id), now_iso))
             if combo_event_links:
-                conn.executemany(
-                    """
-                    INSERT INTO insight_event_links (user_id, insight_id, event_type, event_id, created_at)
-                    VALUES (?, ?, ?, ?, ?)
-                    ON CONFLICT(insight_id, event_type, event_id) DO NOTHING
-                    """,
-                    combo_event_links,
-                )
+                with conn.cursor() as cursor:
+                    cursor.executemany(
+                        """
+                        INSERT INTO insight_event_links (user_id, insight_id, event_type, event_id, created_at)
+                        VALUES (%s, %s, %s, %s, %s)
+                        ON CONFLICT(insight_id, event_type, event_id) DO NOTHING
+                        """,
+                        combo_event_links,
+                    )
             conn.execute(
                 """
                 INSERT INTO retrieval_runs (user_id, item_id, symptom_id, query_key, top_k, retrieved_count, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     combo.user_id,
@@ -1744,7 +1750,7 @@ def recompute_insights(
                     cooccurrence_count, cooccurrence_unique_symptom_count, pair_density,
                     exposure_count_7d, symptom_count_7d, severity_avg_after, computed_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT(user_id, ingredient_id, symptom_id)
                 DO UPDATE SET
                     time_gap_min_minutes = excluded.time_gap_min_minutes,
@@ -1826,11 +1832,11 @@ def list_insights(user_id: int, include_suppressed: bool = True) -> list[dict[st
                 ON v.user_id = i.user_id
                AND v.item_id = i.item_id
                AND v.symptom_id = i.symptom_id
-            WHERE i.user_id = ?
+            WHERE i.user_id = %s
         """
         params: list[Any] = [user_id]
         if not include_suppressed:
-            base_sql += " AND (i.display_decision_reason IS NULL OR i.display_decision_reason NOT LIKE 'suppressed_%')"
+            base_sql += " AND (i.display_decision_reason IS NULL OR i.display_decision_reason NOT LIKE 'suppressed_%%')"
         base_sql += " ORDER BY i.created_at DESC"
         rows = conn.execute(base_sql, tuple(params)).fetchall()
         results: list[dict[str, Any]] = []
@@ -1841,10 +1847,35 @@ def list_insights(user_id: int, include_suppressed: bool = True) -> list[dict[st
             raw_citations = row["citations_json"]
             if raw_citations:
                 try:
-                    decoded = json.loads(raw_citations)
+                    decoded: Any
+                    if isinstance(raw_citations, str):
+                        decoded = json.loads(raw_citations)
+                    else:
+                        # Defensive: legacy rows or non-text columns can already deserialize.
+                        decoded = raw_citations
                     if isinstance(decoded, list):
-                        parsed_citations = [entry for entry in decoded if isinstance(entry, dict)]
-                except json.JSONDecodeError:
+                        for entry in decoded:
+                            if not isinstance(entry, dict):
+                                continue
+                            strength_raw = entry.get("evidence_polarity_and_strength")
+                            strength_value: float | None
+                            if strength_raw is None:
+                                strength_value = None
+                            else:
+                                try:
+                                    strength_value = float(strength_raw)
+                                except (TypeError, ValueError):
+                                    strength_value = None
+                            parsed_citations.append(
+                                {
+                                    "source": str(entry.get("source")) if entry.get("source") is not None else None,
+                                    "title": str(entry.get("title")) if entry.get("title") is not None else None,
+                                    "url": str(entry.get("url")) if entry.get("url") is not None else None,
+                                    "snippet": str(entry.get("snippet")) if entry.get("snippet") is not None else None,
+                                    "evidence_polarity_and_strength": strength_value,
+                                }
+                            )
+                except (json.JSONDecodeError, TypeError):
                     parsed_citations = []
             results.append(
                 {
@@ -1918,7 +1949,7 @@ def list_event_insight_links(user_id: int, *, supported_only: bool = True) -> li
                 l.insight_id AS insight_id
             FROM insight_event_links l
             JOIN insights i ON i.id = l.insight_id
-            WHERE l.user_id = ?
+            WHERE l.user_id = %s
         """
         params: list[Any] = [user_id]
         if supported_only:
@@ -1941,7 +1972,7 @@ def list_event_insight_links(user_id: int, *, supported_only: bool = True) -> li
         insights_sql = """
             SELECT id, item_id, symptom_id
             FROM insights
-            WHERE user_id = ?
+            WHERE user_id = %s
         """
         insight_params: list[Any] = [user_id]
         if supported_only:
@@ -1998,7 +2029,7 @@ def set_insight_verification(
             """
             SELECT item_id, symptom_id
             FROM insights
-            WHERE id = ? AND user_id = ?
+            WHERE id = %s AND user_id = %s
             """,
             (insight_id, user_id),
         ).fetchone()
@@ -2014,7 +2045,7 @@ def set_insight_verification(
                 INSERT INTO insight_verifications (
                     user_id, item_id, symptom_id, verified, rejected, created_at, updated_at
                 )
-                VALUES (?, ?, ?, 1, 0, ?, ?)
+                VALUES (%s, %s, %s, 1, 0, %s, %s)
                 ON CONFLICT(user_id, item_id, symptom_id)
                 DO UPDATE SET
                     verified = 1,
@@ -2028,7 +2059,7 @@ def set_insight_verification(
                 """
                 SELECT COALESCE(rejected, 0) AS rejected
                 FROM insight_verifications
-                WHERE user_id = ? AND item_id = ? AND symptom_id = ?
+                WHERE user_id = %s AND item_id = %s AND symptom_id = %s
                 LIMIT 1
                 """,
                 (user_id, item_id, symptom_id),
@@ -2037,8 +2068,8 @@ def set_insight_verification(
                 conn.execute(
                     """
                     UPDATE insight_verifications
-                    SET verified = 0, updated_at = ?
-                    WHERE user_id = ? AND item_id = ? AND symptom_id = ?
+                    SET verified = 0, updated_at = %s
+                    WHERE user_id = %s AND item_id = %s AND symptom_id = %s
                     """,
                     (now_iso, user_id, item_id, symptom_id),
                 )
@@ -2046,7 +2077,7 @@ def set_insight_verification(
                 conn.execute(
                     """
                     DELETE FROM insight_verifications
-                    WHERE user_id = ? AND item_id = ? AND symptom_id = ?
+                    WHERE user_id = %s AND item_id = %s AND symptom_id = %s
                     """,
                     (user_id, item_id, symptom_id),
                 )
@@ -2080,7 +2111,7 @@ def set_insight_rejection(
             """
             SELECT item_id, symptom_id
             FROM insights
-            WHERE id = ? AND user_id = ?
+            WHERE id = %s AND user_id = %s
             """,
             (insight_id, user_id),
         ).fetchone()
@@ -2096,7 +2127,7 @@ def set_insight_rejection(
                 INSERT INTO insight_verifications (
                     user_id, item_id, symptom_id, verified, rejected, created_at, updated_at
                 )
-                VALUES (?, ?, ?, 0, 1, ?, ?)
+                VALUES (%s, %s, %s, 0, 1, %s, %s)
                 ON CONFLICT(user_id, item_id, symptom_id)
                 DO UPDATE SET
                     verified = 0,
@@ -2110,7 +2141,7 @@ def set_insight_rejection(
                 """
                 SELECT COALESCE(verified, 0) AS verified
                 FROM insight_verifications
-                WHERE user_id = ? AND item_id = ? AND symptom_id = ?
+                WHERE user_id = %s AND item_id = %s AND symptom_id = %s
                 LIMIT 1
                 """,
                 (user_id, item_id, symptom_id),
@@ -2119,8 +2150,8 @@ def set_insight_rejection(
                 conn.execute(
                     """
                     UPDATE insight_verifications
-                    SET rejected = 0, updated_at = ?
-                    WHERE user_id = ? AND item_id = ? AND symptom_id = ?
+                    SET rejected = 0, updated_at = %s
+                    WHERE user_id = %s AND item_id = %s AND symptom_id = %s
                     """,
                     (now_iso, user_id, item_id, symptom_id),
                 )
@@ -2128,7 +2159,7 @@ def set_insight_rejection(
                 conn.execute(
                     """
                     DELETE FROM insight_verifications
-                    WHERE user_id = ? AND item_id = ? AND symptom_id = ?
+                    WHERE user_id = %s AND item_id = %s AND symptom_id = %s
                     """,
                     (user_id, item_id, symptom_id),
                 )

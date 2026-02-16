@@ -1,23 +1,15 @@
 from __future__ import annotations
 
-import tempfile
 import unittest
-from pathlib import Path
 
 import api.db
 from api.job_worker import run_once
+from tests.db_test_utils import reset_test_database
 
 
 class JobWorkerTests(unittest.TestCase):
     def setUp(self) -> None:
-        self._orig_db_path = api.db.DB_PATH
-        self._tmpdir = tempfile.TemporaryDirectory()
-        api.db.DB_PATH = Path(self._tmpdir.name) / "test.db"
-        api.db.initialize_database()
-
-    def tearDown(self) -> None:
-        api.db.DB_PATH = self._orig_db_path
-        self._tmpdir.cleanup()
+        reset_test_database()
 
     def test_run_once_with_no_jobs(self) -> None:
         result = run_once(limit=10, max_papers_per_query=1)

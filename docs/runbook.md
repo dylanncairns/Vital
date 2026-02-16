@@ -24,7 +24,7 @@ curl -X POST "http://127.0.0.1:8000/insights/recompute" \
 
 ## Recompute Insights (All Users)
 ```bash
-for uid in $(sqlite3 data/central.db "SELECT id FROM users;"); do
+for uid in $(psql "$DATABASE_URL" -Atc "SELECT id FROM users;"); do
   curl -s -X POST "http://127.0.0.1:8000/insights/recompute" \
     -H "Content-Type: application/json" \
     -d "{\"user_id\":$uid,\"online_enabled\":false,\"max_papers_per_query\":5}" >/dev/null
@@ -62,10 +62,10 @@ curl -X POST "http://127.0.0.1:8000/citations/audit/enqueue" \
 
 ## Background Jobs Status
 ```bash
-sqlite3 data/central.db "SELECT status, COUNT(*) FROM background_jobs GROUP BY status;"
+psql "$DATABASE_URL" -c "SELECT status, COUNT(*) FROM background_jobs GROUP BY status;"
 ```
 
 ## Supported Insights Check
 ```bash
-sqlite3 data/central.db "SELECT id, item_id, symptom_id, final_score, display_decision_reason FROM insights WHERE display_decision_reason='supported' ORDER BY id DESC LIMIT 20;"
+psql "$DATABASE_URL" -c "SELECT id, item_id, symptom_id, final_score, display_decision_reason FROM insights WHERE display_decision_reason='supported' ORDER BY id DESC LIMIT 20;"
 ```

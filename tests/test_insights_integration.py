@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import tempfile
 import unittest
-from pathlib import Path
 
 import api.db
 from api.main import (
@@ -11,19 +9,13 @@ from api.main import (
     recompute_user_insights,
 )
 from ml.rag import ingest_paper_claim_chunks
+from tests.db_test_utils import reset_test_database
 
 
 class InsightsIntegrationTests(unittest.TestCase):
     def setUp(self) -> None:
-        self._orig_db_path = api.db.DB_PATH
-        self._tmpdir = tempfile.TemporaryDirectory()
-        api.db.DB_PATH = Path(self._tmpdir.name) / "test.db"
-        api.db.initialize_database()
+        reset_test_database()
         self._seed()
-
-    def tearDown(self) -> None:
-        api.db.DB_PATH = self._orig_db_path
-        self._tmpdir.cleanup()
 
     def _exec(self, sql: str, params: tuple = ()) -> None:
         conn = api.db.get_connection()

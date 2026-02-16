@@ -16,7 +16,7 @@ def insert_raw_event_ingest(
         conn.execute(
             """
             INSERT INTO raw_event_ingest (user_id, raw_text, ingested_at, parse_status, error)
-            VALUES (?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s)
             """,
             (
                 user_id,

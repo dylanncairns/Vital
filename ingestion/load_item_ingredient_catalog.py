@@ -44,10 +44,10 @@ def load_catalog(path: Path) -> dict[str, int]:
             item_id = item_lookup.get(item_key)
             if item_id is None:
                 cur = conn.execute(
-                    "INSERT INTO items (name, category) VALUES (?, ?)",
+                    "INSERT INTO items (name, category) VALUES (%s, %s) RETURNING id",
                     (item_name, category),
                 )
-                item_id = int(cur.lastrowid)
+                item_id = int(cur.fetchone()["id"])
                 item_lookup[item_key] = item_id
                 created_items += 1
 
@@ -59,19 +59,23 @@ def load_catalog(path: Path) -> dict[str, int]:
                 ingredient_id = ing_lookup.get(ing_key)
                 if ingredient_id is None:
                     cur = conn.execute(
-                        "INSERT INTO ingredients (name, description) VALUES (?, ?)",
+                        "INSERT INTO ingredients (name, description) VALUES (%s, %s) RETURNING id",
                         (ingredient_name, "catalog"),
                     )
-                    ingredient_id = int(cur.lastrowid)
+                    ingredient_id = int(cur.fetchone()["id"])
                     ing_lookup[ing_key] = ingredient_id
                     created_ingredients += 1
 
-                before = conn.total_changes
-                conn.execute(
-                    "INSERT OR IGNORE INTO items_ingredients (item_id, ingredient_id) VALUES (?, ?)",
+                link_cursor = conn.execute(
+                    """
+                    INSERT INTO items_ingredients (item_id, ingredient_id)
+                    VALUES (%s, %s)
+                    ON CONFLICT (item_id, ingredient_id) DO NOTHING
+                    RETURNING item_id
+                    """,
                     (int(item_id), int(ingredient_id)),
                 )
-                if conn.total_changes > before:
+                if link_cursor.fetchone() is not None:
                     created_links += 1
 
         conn.commit()
@@ -93,7 +97,7 @@ def main() -> None:
     parser.add_argument(
         "--path",
         type=str,
-        default="data/item_ingredient_catalog.json",
+        default="data/models/item_ingredient_catalog.json",
         help="Path to catalog JSON file",
     )
     args = parser.parse_args()
@@ -102,4 +106,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

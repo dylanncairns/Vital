@@ -15,7 +15,7 @@ def expand_exposure_event(exposure_event_id: int, conn=None) -> None:
         SELECT e.id AS exposure_event_id, ii.ingredient_id
         FROM exposure_events e
         JOIN items_ingredients ii ON ii.item_id = e.item_id
-        WHERE e.id = ?
+        WHERE e.id = %s
         """,
         (exposure_event_id,),
     )
@@ -26,10 +26,11 @@ def expand_exposure_event(exposure_event_id: int, conn=None) -> None:
             conn.close()
         return
     # else expand all ingredients of an item into entries of individual exposures
-    conn.executemany(
+    cursor.executemany(
         """
-        INSERT OR IGNORE INTO exposure_expansions (exposure_event_id, ingredient_id)
-        VALUES (?, ?)
+        INSERT INTO exposure_expansions (exposure_event_id, ingredient_id)
+        VALUES (%s, %s)
+        ON CONFLICT (exposure_event_id, ingredient_id) DO NOTHING
         """,
         [(row["exposure_event_id"], row["ingredient_id"]) for row in rows],
     )
@@ -60,7 +61,7 @@ def backfill_missing_exposure_expansions(user_id: int | None = None, conn=None) 
             SELECT e.id AS exposure_event_id
             FROM exposure_events e
             LEFT JOIN exposure_expansions x ON x.exposure_event_id = e.id
-            WHERE e.user_id = ?
+            WHERE e.user_id = %s
               AND x.id IS NULL
             ORDER BY e.id ASC
             """,

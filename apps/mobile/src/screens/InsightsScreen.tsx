@@ -108,7 +108,7 @@ export default function InsightsScreen() {
             <Text style={styles.headerTitle}>Insights</Text>
           </View>
         }
-        ListEmptyComponent={<Text style={styles.emptyText}>No insights yet.</Text>}
+        ListEmptyComponent={<Text style={styles.emptyText}>Add more events to generate insights.</Text>}
         renderItem={({ item }) => {
           const isVerified = Boolean(item.user_verified);
           const isRejected = Boolean(item.user_rejected);

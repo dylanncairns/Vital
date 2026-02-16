@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import tempfile
@@ -118,22 +119,6 @@ def upload_paths_to_vector_store(
     }
 
 
-def collect_local_sources(source_dir: Path) -> list[Path]:
-    patterns = ("*.pdf", "*.txt", "*.md")
-    paths: list[Path] = []
-    for pattern in patterns:
-        paths.extend(sorted(source_dir.rglob(pattern)))
-    deduped: list[Path] = []
-    seen: set[str] = set()
-    for path in paths:
-        key = str(path.resolve())
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(path)
-    return deduped
-
-
 def export_papers_table_to_text_files(output_dir: Path) -> list[Path]:
     conn = get_connection()
     try:
@@ -171,6 +156,88 @@ def _safe_filename(value: str) -> str:
     cleaned = "".join(char if char.isalnum() else "_" for char in value.strip().lower())
     cleaned = "_".join(token for token in cleaned.split("_") if token)
     return cleaned[:64] if cleaned else "paper"
+
+
+def _source_hash(*, user_id: int | None, payload: dict[str, Any]) -> str:
+    material = {
+        "user_id": user_id,
+        "query": payload.get("query"),
+        "original_query": payload.get("original_query"),
+        "title": payload.get("title"),
+        "url": payload.get("url"),
+        "publication_date": payload.get("publication_date"),
+        "source": payload.get("source"),
+        "abstract": payload.get("abstract"),
+    }
+    encoded = json.dumps(material, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _persist_discovered_sources(
+    *,
+    user_id: int | None,
+    records: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if not records:
+        return []
+    conn = get_connection()
+    try:
+        persisted: list[dict[str, Any]] = []
+        for record in records:
+            payload = record["payload"]
+            payload_json = json.dumps(payload, indent=2, ensure_ascii=False)
+            source_hash = _source_hash(user_id=user_id, payload=payload)
+            row = conn.execute(
+                """
+                INSERT INTO rag_source_documents (
+                    user_id, query, original_query, filename, title, url, publication_date,
+                    source, abstract, payload_json, source_hash, created_at, updated_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+                ON CONFLICT (source_hash) DO UPDATE SET
+                    user_id = EXCLUDED.user_id,
+                    query = EXCLUDED.query,
+                    original_query = EXCLUDED.original_query,
+                    filename = EXCLUDED.filename,
+                    title = EXCLUDED.title,
+                    url = EXCLUDED.url,
+                    publication_date = EXCLUDED.publication_date,
+                    source = EXCLUDED.source,
+                    abstract = EXCLUDED.abstract,
+                    payload_json = EXCLUDED.payload_json,
+                    updated_at = EXCLUDED.updated_at
+                RETURNING id, filename, payload_json
+                """,
+                (
+                    user_id,
+                    payload.get("query"),
+                    payload.get("original_query"),
+                    record["filename"],
+                    payload.get("title"),
+                    payload.get("url"),
+                    payload.get("publication_date"),
+                    payload.get("source"),
+                    payload.get("abstract"),
+                    payload_json,
+                    source_hash,
+                ),
+            ).fetchone()
+            persisted.append(dict(row))
+        conn.commit()
+        return persisted
+    finally:
+        conn.close()
+
+
+def _materialize_source_rows(rows: list[dict[str, Any]], output_dir: Path) -> list[Path]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    paths: list[Path] = []
+    for row in rows:
+        filename = str(row.get("filename") or f"rag_source_{int(row['id'])}.txt")
+        path = output_dir / filename
+        path.write_text(str(row["payload_json"]), encoding="utf-8")
+        paths.append(path)
+    return paths
 
 
 def _normalize_discovery_query(query: str) -> str:
@@ -407,8 +474,7 @@ def auto_generate_sources_for_user(
     if not queries:
         return [], [{"query": "", "error": "No literature queries built from candidates."}]
 
-    output_dir.mkdir(parents=True, exist_ok=True)
-    written_paths: list[Path] = []
+    source_records: list[dict[str, Any]] = []
     written_keys: set[tuple[str, str]] = set()
     errors: list[dict[str, str]] = []
     for query in queries[:max_queries]:
@@ -437,9 +503,18 @@ def auto_generate_sources_for_user(
                 "source": paper.get("source"),
                 "abstract": paper.get("abstract"),
             }
-            path = output_dir / filename
-            path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-            written_paths.append(path)
+            source_records.append(
+                {
+                    "filename": filename,
+                    "payload": payload,
+                }
+            )
+
+    persisted_rows = _persist_discovered_sources(
+        user_id=user_id,
+        records=source_records,
+    )
+    written_paths = _materialize_source_rows(persisted_rows, output_dir)
     return written_paths, errors
 
 
@@ -510,9 +585,9 @@ def ingest_sources_for_candidates(
             "auto_discovery_errors": [{"query": "", "error": "No discovery queries built."}],
         }
 
-    output = Path(output_dir)
-    output.mkdir(parents=True, exist_ok=True)
-    generated_paths: list[Path] = []
+    candidate_user_ids = {int(candidate["user_id"]) for candidate in candidates if candidate.get("user_id") is not None}
+    generated_user_id = next(iter(candidate_user_ids)) if len(candidate_user_ids) == 1 else None
+    generated_records: list[dict[str, Any]] = []
     generated_keys: set[tuple[str, str]] = set()
     errors: list[dict[str, str]] = []
 
@@ -542,19 +617,44 @@ def ingest_sources_for_candidates(
                 "source": paper.get("source"),
                 "abstract": paper.get("abstract"),
             }
-            path = output / filename
-            path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-            generated_paths.append(path)
+            generated_records.append(
+                {
+                    "filename": filename,
+                    "payload": payload,
+                }
+            )
 
-    store_id = ensure_vector_store_id(provided_id=vector_store_id, name=vector_store_name)
-    upload_result = upload_paths_to_vector_store(
-        vector_store_id=store_id,
-        paths=generated_paths,
+    persisted_rows = _persist_discovered_sources(
+        user_id=generated_user_id,
+        records=generated_records,
     )
-    upload_result["source_files"] = [str(path) for path in generated_paths]
-    upload_result["auto_generated_files"] = [str(path) for path in generated_paths]
+    generated_paths: list[Path] = []
+    if persisted_rows:
+        with tempfile.TemporaryDirectory(prefix="vital_rag_sources_") as tmp:
+            generated_paths = _materialize_source_rows(persisted_rows, Path(tmp))
+            store_id = ensure_vector_store_id(provided_id=vector_store_id, name=vector_store_name)
+            upload_result = upload_paths_to_vector_store(
+                vector_store_id=store_id,
+                paths=generated_paths,
+            )
+    else:
+        store_id = ensure_vector_store_id(provided_id=vector_store_id, name=vector_store_name)
+        upload_result = {
+            "vector_store_id": store_id,
+            "uploaded_count": 0,
+            "uploaded_file_ids": [],
+            "statuses": {},
+            "skipped": [],
+        }
+
+    upload_result["source_files"] = [
+        f"rag_source_documents/{int(row['id'])}:{row['filename']}"
+        for row in persisted_rows
+    ]
+    upload_result["auto_generated_files"] = list(upload_result["source_files"])
+    upload_result["output_dir"] = output_dir
     upload_result["auto_discovery_errors"] = errors
-    if not generated_paths:
+    if not persisted_rows:
         upload_result["status"] = "error"
         upload_result["reason"] = "auto_discovery_produced_no_sources"
     return upload_result
@@ -562,7 +662,6 @@ def ingest_sources_for_candidates(
 
 def ingest_sources(
     *,
-    source_dir: str | None,
     vector_store_id: str | None,
     vector_store_name: str,
     include_papers_table: bool,
@@ -574,13 +673,10 @@ def ingest_sources(
     final_vector_store_id = ensure_vector_store_id(provided_id=vector_store_id, name=vector_store_name)
     all_paths: list[Path] = []
 
-    if source_dir:
-        all_paths.extend(collect_local_sources(Path(source_dir)))
-
     auto_generated: list[str] = []
     auto_discovery_errors: list[dict[str, str]] = []
-    if auto_discover_when_empty and not all_paths and user_id is not None:
-        auto_dir = Path(source_dir) if source_dir else Path("data/rag_sources_auto")
+    if auto_discover_when_empty and user_id is not None:
+        auto_dir = Path("data/rag_sources_auto")
         generated, auto_discovery_errors = auto_generate_sources_for_user(
             user_id=user_id,
             output_dir=auto_dir,
@@ -618,7 +714,6 @@ def ingest_sources(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Upload source files into an OpenAI vector store for RAG.")
-    parser.add_argument("--source-dir", default="data/rag_sources", help="Directory to scan for .pdf/.txt/.md")
     parser.add_argument("--vector-store-id", default=None, help="Existing vector store ID (uses env if omitted)")
     parser.add_argument("--vector-store-name", default="vital-rag-store", help="Name when creating a new vector store")
     parser.add_argument(
@@ -637,7 +732,6 @@ def main() -> None:
     args = parser.parse_args()
 
     result = ingest_sources(
-        source_dir=args.source_dir,
         vector_store_id=args.vector_store_id,
         vector_store_name=args.vector_store_name,
         include_papers_table=args.include_papers_table,

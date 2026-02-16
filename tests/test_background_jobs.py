@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import tempfile
 import unittest
-from pathlib import Path
 from unittest.mock import patch
 
 import api.db
@@ -17,19 +15,13 @@ from api.repositories.jobs import (
     list_pending_jobs,
 )
 from ml.rag import ingest_paper_claim_chunks
+from tests.db_test_utils import reset_test_database
 
 
 class BackgroundJobsTests(unittest.TestCase):
     def setUp(self) -> None:
-        self._orig_db_path = api.db.DB_PATH
-        self._tmpdir = tempfile.TemporaryDirectory()
-        api.db.DB_PATH = Path(self._tmpdir.name) / "test.db"
-        api.db.initialize_database()
+        reset_test_database()
         self._seed()
-
-    def tearDown(self) -> None:
-        api.db.DB_PATH = self._orig_db_path
-        self._tmpdir.cleanup()
 
     def _exec(self, sql: str, params: tuple = ()) -> None:
         conn = api.db.get_connection()
@@ -166,7 +158,7 @@ class BackgroundJobsTests(unittest.TestCase):
                 UPDATE background_jobs
                 SET status = 'running',
                     updated_at = '2000-01-01T00:00:00+00:00'
-                WHERE id = ?
+                WHERE id = %s
                 """,
                 (created,),
             )
@@ -197,7 +189,7 @@ class BackgroundJobsTests(unittest.TestCase):
                 SET status = 'failed',
                     attempts = 1,
                     updated_at = '2000-01-01T00:00:00+00:00'
-                WHERE id = ?
+                WHERE id = %s
                 """,
                 (created,),
             )
@@ -226,9 +218,9 @@ class BackgroundJobsTests(unittest.TestCase):
                 """
                 UPDATE background_jobs
                 SET status = 'failed',
-                    attempts = ?,
+                    attempts = %s,
                     updated_at = '2000-01-01T00:00:00+00:00'
-                WHERE id = ?
+                WHERE id = %s
                 """,
                 (DEFAULT_MAX_FAILED_ATTEMPTS, created),
             )

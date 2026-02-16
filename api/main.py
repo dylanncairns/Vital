@@ -1,16 +1,17 @@
 import json
 import os
-import sqlite3
 from contextlib import asynccontextmanager
 from typing import Optional
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from psycopg import Error as DatabaseError
 
 from api.db import get_connection, initialize_database
 from api.repositories.events import list_events
 from api.repositories.auth import (
     create_user,
+    delete_user_account,
     login_user,
     resolve_user_from_token,
     revoke_session,
@@ -438,7 +439,8 @@ def _insert_event_and_expand(normalized: NormalizedEvent) -> int:
                     user_id, item_id, timestamp, time_range_start, time_range_end,
                     time_confidence, ingested_at, raw_text, route
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
                 """,
                 (
                     normalized["user_id"],
@@ -452,7 +454,8 @@ def _insert_event_and_expand(normalized: NormalizedEvent) -> int:
                     normalized["route"],
                 ),
             )
-            created_id = cursor.lastrowid
+            created_row = cursor.fetchone()
+            created_id = int(created_row["id"])
             # insert exposure expansion rows before commit so writes are atomic
             expand_exposure_event(created_id, conn=conn)
         else:
@@ -462,7 +465,8 @@ def _insert_event_and_expand(normalized: NormalizedEvent) -> int:
                     user_id, symptom_id, timestamp, time_range_start, time_range_end,
                     time_confidence, ingested_at, raw_text, severity
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
                 """,
                 (
                     normalized["user_id"],
@@ -476,11 +480,12 @@ def _insert_event_and_expand(normalized: NormalizedEvent) -> int:
                     normalized["severity"],
                 ),
             )
-            created_id = cursor.lastrowid
+            created_row = cursor.fetchone()
+            created_id = int(created_row["id"])
 
         conn.commit()
         return created_id
-    except sqlite3.DatabaseError:
+    except DatabaseError:
         conn.rollback()
         raise
     finally:
@@ -495,7 +500,7 @@ def _enqueue_impacted_recompute_jobs(normalized: NormalizedEvent) -> int:
         if normalized["event_type"] == "exposure":
             item_id = int(normalized["item_id"])
             symptom_rows = conn.execute(
-                "SELECT DISTINCT symptom_id FROM symptom_events WHERE user_id = ?",
+                "SELECT DISTINCT symptom_id FROM symptom_events WHERE user_id = %s",
                 (user_id,),
             ).fetchall()
             symptom_ids = [int(row["symptom_id"]) for row in symptom_rows if row["symptom_id"] is not None]
@@ -514,7 +519,7 @@ def _enqueue_impacted_recompute_jobs(normalized: NormalizedEvent) -> int:
         else:
             symptom_id = int(normalized["symptom_id"])
             item_rows = conn.execute(
-                "SELECT DISTINCT item_id FROM exposure_events WHERE user_id = ?",
+                "SELECT DISTINCT item_id FROM exposure_events WHERE user_id = %s",
                 (user_id,),
             ).fetchall()
             item_ids = [int(row["item_id"]) for row in item_rows if row["item_id"] is not None]
@@ -542,7 +547,7 @@ def _enqueue_recompute_jobs_for_items(*, user_id: int, item_ids: set[int], trigg
     jobs_added = 0
     try:
         symptom_rows = conn.execute(
-            "SELECT DISTINCT symptom_id FROM symptom_events WHERE user_id = ?",
+            "SELECT DISTINCT symptom_id FROM symptom_events WHERE user_id = %s",
             (int(user_id),),
         ).fetchall()
         symptom_ids = [int(row["symptom_id"]) for row in symptom_rows if row["symptom_id"] is not None]
@@ -569,7 +574,7 @@ def _enqueue_recompute_jobs_for_symptoms(*, user_id: int, symptom_ids: set[int],
     jobs_added = 0
     try:
         item_rows = conn.execute(
-            "SELECT DISTINCT item_id FROM exposure_events WHERE user_id = ?",
+            "SELECT DISTINCT item_id FROM exposure_events WHERE user_id = %s",
             (int(user_id),),
         ).fetchall()
         item_ids = [int(row["item_id"]) for row in item_rows if row["item_id"] is not None]
@@ -640,7 +645,7 @@ def auth_me_patch(payload: AuthMePatchIn, authorization: Optional[str] = Header(
     conn = get_connection()
     try:
         conn.execute(
-            "UPDATE users SET name = ? WHERE id = ?",
+            "UPDATE users SET name = %s WHERE id = %s",
             (next_name, int(auth_user["id"])),
         )
         conn.commit()
@@ -651,6 +656,16 @@ def auth_me_patch(payload: AuthMePatchIn, authorization: Optional[str] = Header(
         "username": str(auth_user.get("username") or ""),
         "name": next_name,
     }
+
+
+@app.delete("/auth/me")
+def auth_me_delete(authorization: Optional[str] = Header(default=None)):
+    token = _extract_bearer_token(authorization)
+    auth_user = resolve_user_from_token(token)
+    if auth_user is None:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    delete_user_account(user_id=int(auth_user["id"]))
+    return {"status": "ok"}
 
 
 # user submits entry
@@ -676,7 +691,7 @@ def create_event(payload: EventIn, authorization: Optional[str] = Header(default
 
     try:
         created_id = _insert_event_and_expand(normalized)
-    except sqlite3.DatabaseError as exc:
+    except DatabaseError as exc:
         # db write failed, queue for retry/review instead of surfacing stack trace
         insert_raw_event_ingest(normalized["user_id"], json.dumps(normalized), "failed", str(exc))
         return _event_response(-1, normalized, status="queued", resolution="db_error")
@@ -707,7 +722,7 @@ def patch_event(
     try:
         if normalized_type == "exposure":
             existing = conn.execute(
-                "SELECT id, item_id FROM exposure_events WHERE id = ? AND user_id = ?",
+                "SELECT id, item_id FROM exposure_events WHERE id = %s AND user_id = %s",
                 (int(event_id), int(user_id)),
             ).fetchone()
             if existing is None:
@@ -718,46 +733,46 @@ def patch_event(
             if resolved_item_id is None and payload.item_name:
                 resolved_item_id = resolve_item_id(payload.item_name)
             if resolved_item_id is not None:
-                updates.append("item_id = ?")
+                updates.append("item_id = %s")
                 params.append(int(resolved_item_id))
             if payload.route is not None:
-                updates.append("route = ?")
+                updates.append("route = %s")
                 try:
                     normalized_route = normalize_route(payload.route, strict=True)
                 except NormalizationError as exc:
                     raise HTTPException(status_code=400, detail=str(exc))
                 params.append(normalized_route)
             if payload.timestamp is not None:
-                updates.append("timestamp = ?")
+                updates.append("timestamp = %s")
                 try:
                     params.append(_normalize_patch_time_value(payload.timestamp))
                 except ValueError:
                     raise HTTPException(status_code=400, detail="invalid datetime format: timestamp")
             if payload.time_range_start is not None:
-                updates.append("time_range_start = ?")
+                updates.append("time_range_start = %s")
                 try:
                     params.append(_normalize_patch_time_value(payload.time_range_start))
                 except ValueError:
                     raise HTTPException(status_code=400, detail="invalid datetime format: time_range_start")
             if payload.time_range_end is not None:
-                updates.append("time_range_end = ?")
+                updates.append("time_range_end = %s")
                 try:
                     params.append(_normalize_patch_time_value(payload.time_range_end))
                 except ValueError:
                     raise HTTPException(status_code=400, detail="invalid datetime format: time_range_end")
             if payload.time_confidence is not None:
-                updates.append("time_confidence = ?")
+                updates.append("time_confidence = %s")
                 params.append(payload.time_confidence)
             if payload.raw_text is not None:
-                updates.append("raw_text = ?")
+                updates.append("raw_text = %s")
                 params.append(payload.raw_text)
             if updates:
                 params.extend([int(event_id), int(user_id)])
                 conn.execute(
-                    f"UPDATE exposure_events SET {', '.join(updates)} WHERE id = ? AND user_id = ?",
+                    f"UPDATE exposure_events SET {', '.join(updates)} WHERE id = %s AND user_id = %s",
                     tuple(params),
                 )
-                conn.execute("DELETE FROM exposure_expansions WHERE exposure_event_id = ?", (int(event_id),))
+                conn.execute("DELETE FROM exposure_expansions WHERE exposure_event_id = %s", (int(event_id),))
                 expand_exposure_event(int(event_id), conn=conn)
             conn.commit()
             old_item_id = int(existing["item_id"])
@@ -769,7 +784,7 @@ def patch_event(
             )
         else:
             existing = conn.execute(
-                "SELECT id, symptom_id FROM symptom_events WHERE id = ? AND user_id = ?",
+                "SELECT id, symptom_id FROM symptom_events WHERE id = %s AND user_id = %s",
                 (int(event_id), int(user_id)),
             ).fetchone()
             if existing is None:
@@ -780,39 +795,39 @@ def patch_event(
             if resolved_symptom_id is None and payload.symptom_name:
                 resolved_symptom_id = resolve_symptom_id(payload.symptom_name)
             if resolved_symptom_id is not None:
-                updates.append("symptom_id = ?")
+                updates.append("symptom_id = %s")
                 params.append(int(resolved_symptom_id))
             if payload.severity is not None:
-                updates.append("severity = ?")
+                updates.append("severity = %s")
                 params.append(int(payload.severity))
             if payload.timestamp is not None:
-                updates.append("timestamp = ?")
+                updates.append("timestamp = %s")
                 try:
                     params.append(_normalize_patch_time_value(payload.timestamp))
                 except ValueError:
                     raise HTTPException(status_code=400, detail="invalid datetime format: timestamp")
             if payload.time_range_start is not None:
-                updates.append("time_range_start = ?")
+                updates.append("time_range_start = %s")
                 try:
                     params.append(_normalize_patch_time_value(payload.time_range_start))
                 except ValueError:
                     raise HTTPException(status_code=400, detail="invalid datetime format: time_range_start")
             if payload.time_range_end is not None:
-                updates.append("time_range_end = ?")
+                updates.append("time_range_end = %s")
                 try:
                     params.append(_normalize_patch_time_value(payload.time_range_end))
                 except ValueError:
                     raise HTTPException(status_code=400, detail="invalid datetime format: time_range_end")
             if payload.time_confidence is not None:
-                updates.append("time_confidence = ?")
+                updates.append("time_confidence = %s")
                 params.append(payload.time_confidence)
             if payload.raw_text is not None:
-                updates.append("raw_text = ?")
+                updates.append("raw_text = %s")
                 params.append(payload.raw_text)
             if updates:
                 params.extend([int(event_id), int(user_id)])
                 conn.execute(
-                    f"UPDATE symptom_events SET {', '.join(updates)} WHERE id = ? AND user_id = ?",
+                    f"UPDATE symptom_events SET {', '.join(updates)} WHERE id = %s AND user_id = %s",
                     tuple(params),
                 )
             conn.commit()
@@ -849,14 +864,14 @@ def delete_event(
     try:
         if normalized_type == "exposure":
             existing = conn.execute(
-                "SELECT item_id FROM exposure_events WHERE id = ? AND user_id = ?",
+                "SELECT item_id FROM exposure_events WHERE id = %s AND user_id = %s",
                 (int(event_id), int(user_id)),
             ).fetchone()
             if existing is None:
                 return {"status": "not_found", "event_id": int(event_id), "event_type": normalized_type, "jobs_queued": 0}
             item_id = int(existing["item_id"])
-            conn.execute("DELETE FROM exposure_expansions WHERE exposure_event_id = ?", (int(event_id),))
-            conn.execute("DELETE FROM exposure_events WHERE id = ? AND user_id = ?", (int(event_id), int(user_id)))
+            conn.execute("DELETE FROM exposure_expansions WHERE exposure_event_id = %s", (int(event_id),))
+            conn.execute("DELETE FROM exposure_events WHERE id = %s AND user_id = %s", (int(event_id), int(user_id)))
             conn.commit()
             jobs_queued = _enqueue_recompute_jobs_for_items(
                 user_id=int(user_id),
@@ -865,13 +880,13 @@ def delete_event(
             )
         else:
             existing = conn.execute(
-                "SELECT symptom_id FROM symptom_events WHERE id = ? AND user_id = ?",
+                "SELECT symptom_id FROM symptom_events WHERE id = %s AND user_id = %s",
                 (int(event_id), int(user_id)),
             ).fetchone()
             if existing is None:
                 return {"status": "not_found", "event_id": int(event_id), "event_type": normalized_type, "jobs_queued": 0}
             symptom_id = int(existing["symptom_id"])
-            conn.execute("DELETE FROM symptom_events WHERE id = ? AND user_id = ?", (int(event_id), int(user_id)))
+            conn.execute("DELETE FROM symptom_events WHERE id = %s AND user_id = %s", (int(event_id), int(user_id)))
             conn.commit()
             jobs_queued = _enqueue_recompute_jobs_for_symptoms(
                 user_id=int(user_id),
@@ -1045,7 +1060,7 @@ def sync_rag_evidence(payload: RagSyncIn, authorization: Optional[str] = Header(
             max_papers_per_query=payload.max_papers_per_query,
         )
         conn.commit()
-    except sqlite3.DatabaseError:
+    except DatabaseError:
         conn.rollback()
         raise
     finally:
@@ -1068,7 +1083,7 @@ def audit_citations(payload: CitationAuditIn):
             delete_missing=payload.delete_missing,
         )
         conn.commit()
-    except sqlite3.DatabaseError:
+    except DatabaseError:
         conn.rollback()
         raise
     finally:
@@ -1117,7 +1132,7 @@ def process_background_jobs(payload: ProcessJobsIn):
                         """
                         SELECT evidence_strength_score
                         FROM insights
-                        WHERE user_id = ? AND item_id = ? AND symptom_id = ?
+                        WHERE user_id = %s AND item_id = %s AND symptom_id = %s
                         ORDER BY id DESC
                         LIMIT 1
                         """,
@@ -1157,7 +1172,7 @@ def process_background_jobs(payload: ProcessJobsIn):
                             max_papers_per_query=payload.max_papers_per_query,
                         )
                         conn.commit()
-                    except sqlite3.DatabaseError:
+                    except DatabaseError:
                         conn.rollback()
                         raise
                     finally:
@@ -1182,7 +1197,7 @@ def process_background_jobs(payload: ProcessJobsIn):
                                 max_papers_per_query=max(8, payload.max_papers_per_query),
                             )
                             conn_retry.commit()
-                        except sqlite3.DatabaseError:
+                        except DatabaseError:
                             conn_retry.rollback()
                             raise
                         finally:
@@ -1204,7 +1219,7 @@ def process_background_jobs(payload: ProcessJobsIn):
                         delete_missing=delete_missing,
                     )
                     conn.commit()
-                except sqlite3.DatabaseError:
+                except DatabaseError:
                     conn.rollback()
                     raise
                 finally:

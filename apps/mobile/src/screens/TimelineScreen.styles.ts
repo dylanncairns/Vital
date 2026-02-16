@@ -123,4 +123,11 @@ export const styles = StyleSheet.create({
     fontSize: 11,
     fontFamily: "Exo2-Regular",
   },
+  emptyText: {
+    color: TEXT_SOFT_DARK,
+    fontSize: 14,
+    fontFamily: "Exo2-Regular",
+    textAlign: "center",
+    marginTop: 20,
+  },
 });

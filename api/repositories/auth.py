@@ -52,7 +52,7 @@ def create_user(*, username: str, password: str, name: str | None = None) -> dic
     conn = get_connection()
     try:
         existing = conn.execute(
-            "SELECT id FROM users WHERE username = ? LIMIT 1",
+            "SELECT id FROM users WHERE username = %s LIMIT 1",
             (uname,),
         ).fetchone()
         if existing is not None:
@@ -60,12 +60,13 @@ def create_user(*, username: str, password: str, name: str | None = None) -> dic
         cursor = conn.execute(
             """
             INSERT INTO users (created_at, name, username, password_hash)
-            VALUES (?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s)
+            RETURNING id
             """,
             (_now_iso(), (name or uname).strip(), uname, _hash_password(password)),
         )
         conn.commit()
-        user_id = int(cursor.lastrowid)
+        user_id = int(cursor.fetchone()["id"])
         return {"id": user_id, "username": uname, "name": (name or uname).strip()}
     finally:
         conn.close()
@@ -80,7 +81,7 @@ def _create_session(*, user_id: int) -> str:
         conn.execute(
             """
             INSERT INTO auth_sessions (user_id, token, created_at, expires_at, revoked_at)
-            VALUES (?, ?, ?, ?, NULL)
+            VALUES (%s, %s, %s, %s, NULL)
             """,
             (int(user_id), token, now.isoformat(), expires_at),
         )
@@ -95,7 +96,7 @@ def login_user(*, username: str, password: str) -> dict | None:
     conn = get_connection()
     try:
         row = conn.execute(
-            "SELECT id, username, name, password_hash FROM users WHERE username = ? LIMIT 1",
+            "SELECT id, username, name, password_hash FROM users WHERE username = %s LIMIT 1",
             (uname,),
         ).fetchone()
     finally:
@@ -121,9 +122,9 @@ def resolve_user_from_token(token: str | None) -> dict | None:
             SELECT u.id AS id, u.username AS username, u.name AS name
             FROM auth_sessions s
             JOIN users u ON u.id = s.user_id
-            WHERE s.token = ?
+            WHERE s.token = %s
               AND s.revoked_at IS NULL
-              AND s.expires_at > ?
+              AND s.expires_at > %s
             LIMIT 1
             """,
             (token, _now_iso()),
@@ -139,10 +140,42 @@ def revoke_session(token: str | None) -> None:
     conn = get_connection()
     try:
         conn.execute(
-            "UPDATE auth_sessions SET revoked_at = ? WHERE token = ? AND revoked_at IS NULL",
+            "UPDATE auth_sessions SET revoked_at = %s WHERE token = %s AND revoked_at IS NULL",
             (_now_iso(), token),
         )
         conn.commit()
     finally:
         conn.close()
 
+
+def delete_user_account(*, user_id: int) -> None:
+    uid = int(user_id)
+    conn = get_connection()
+    try:
+        conn.execute("DELETE FROM auth_sessions WHERE user_id = %s", (uid,))
+        conn.execute("DELETE FROM background_jobs WHERE user_id = %s", (uid,))
+        conn.execute("DELETE FROM recurring_exposure_rules WHERE user_id = %s", (uid,))
+        conn.execute("DELETE FROM raw_event_ingest WHERE user_id = %s", (uid,))
+        conn.execute("DELETE FROM retrieval_runs WHERE user_id = %s", (uid,))
+        conn.execute("DELETE FROM rag_source_documents WHERE user_id = %s", (uid,))
+        conn.execute("DELETE FROM insight_event_links WHERE user_id = %s", (uid,))
+        conn.execute("DELETE FROM insight_verifications WHERE user_id = %s", (uid,))
+        conn.execute("DELETE FROM insights WHERE user_id = %s", (uid,))
+        conn.execute("DELETE FROM derived_features_combos WHERE user_id = %s", (uid,))
+        conn.execute("DELETE FROM derived_features_ingredients WHERE user_id = %s", (uid,))
+        conn.execute("DELETE FROM derived_features WHERE user_id = %s", (uid,))
+        conn.execute(
+            """
+            DELETE FROM exposure_expansions
+            WHERE exposure_event_id IN (
+                SELECT id FROM exposure_events WHERE user_id = %s
+            )
+            """,
+            (uid,),
+        )
+        conn.execute("DELETE FROM exposure_events WHERE user_id = %s", (uid,))
+        conn.execute("DELETE FROM symptom_events WHERE user_id = %s", (uid,))
+        conn.execute("DELETE FROM users WHERE id = %s", (uid,))
+        conn.commit()
+    finally:
+        conn.close()

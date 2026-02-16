@@ -16,7 +16,7 @@ def main() -> None:
     parser.add_argument(
         "--curated-path",
         type=str,
-        default="data/curated_linkages.json",
+        default="data/models/curated_linkages.json",
         help="Path to curated linkage JSON catalog",
     )
     parser.add_argument(

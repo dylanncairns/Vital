@@ -1491,7 +1491,8 @@ def ingest_text_event(
                     INSERT INTO exposure_events (
                         user_id, item_id, timestamp, time_range_start, time_range_end,
                         time_confidence, ingested_at, raw_text, route
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    RETURNING id
                     """,
                     (
                         user_id,
@@ -1505,10 +1506,10 @@ def ingest_text_event(
                         route,
                     ),
                 )
-                expand_exposure_event(cursor.lastrowid, conn=conn)
+                expand_exposure_event(int(cursor.fetchone()["id"]), conn=conn)
                 events_written += 1
             symptom_rows = conn.execute(
-                "SELECT DISTINCT symptom_id FROM symptom_events WHERE user_id = ?",
+                "SELECT DISTINCT symptom_id FROM symptom_events WHERE user_id = %s",
                 (user_id,),
             ).fetchall()
             symptom_ids = [int(row["symptom_id"]) for row in symptom_rows if row["symptom_id"] is not None]
@@ -1531,7 +1532,7 @@ def ingest_text_event(
                 INSERT INTO symptom_events (
                     user_id, symptom_id, timestamp, time_range_start, time_range_end,
                     time_confidence, ingested_at, raw_text, severity
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     user_id,
@@ -1548,7 +1549,7 @@ def ingest_text_event(
             events_written += 1
             if parsed.symptom_id is not None:
                 item_rows = conn.execute(
-                    "SELECT DISTINCT item_id FROM exposure_events WHERE user_id = ?",
+                    "SELECT DISTINCT item_id FROM exposure_events WHERE user_id = %s",
                     (user_id,),
                 ).fetchall()
                 symptom_id = int(parsed.symptom_id)

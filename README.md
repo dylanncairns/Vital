@@ -14,7 +14,7 @@
 - Insights that pass the score gate are shown to user, who can verify and reject the insight to improve the model's accuracy globally and user-specifically
 
 ## Run it Locally
-- Set env vars: `OPENAI_API_KEY`=__, `RAG_VECTOR_STORE_ID`=__, `RAG_OPENAI_MODEL`=__, `EXPO_PUBLIC_API_BASE_URL=http://127.0.0.1:8000`
+- Set env vars: `OPENAI_API_KEY='x'`, `RAG_VECTOR_STORE_ID='x'`, `RAG_OPENAI_MODEL='x'`, `EXPO_PUBLIC_API_BASE_URL=http://127.0.0.1:8000`, `DATABASE_URL='x'`
 - Install Python dependencies: `pip install -r requirements.txt`
 - Terminal 1 (from repo root): `uvicorn api.main:app --reload`
 - Terminal 2 (from apps/mobile or apps/web): `npm install && npm start`
@@ -35,15 +35,17 @@
     - Timestamp normalization (local <--> UTC)
     - Exposure and symptom alias resolution
     - Exposure to a multi-ingredient item event expansion into events for ingredients
-- [Data is stored in SQLite with migrations](data/schema.sql)
+- [PostgreSQL relational database](data/schema.sql)
     - Event domain with all events, user timeline, failed parsing capture, recurring exposure rules
     - Knowledge and evidence domain with items, ingredients, aliases, items_ingredients, evidence + abstracts, retrieval history
     - Feature and output domain with derived features for candidate-specific temporal features, insights with score, insight-event links to connect timeline to insights, insight verifications
     - Operations domain with background jobs for worker and state of model retraining trigger
+    - PostgreSQL chosen to handle concurrent users via multi-version concurrency control, client-server operationality, relationality
 - [Retrieval-Augmented Generation evidence retrieval pipeline](ml/rag.py)
     - rag.py sends OpenAI Responses API a targeted evidence retrieval query
     - OpenAI GPT-4.1 model is allowed to search only a configured document index vector store and is given context for item, symptom, route, lag buckets
     - If this process acquires no evidence for candidate, it sends OpenAI web search API a query to add evidence to the vector store and is given the same context
+    - vector_ingest stores source records in DB
     - Evidence validation filters citations with weak relevance to candidate linkage
     - Evidence is aggregated into support direction, strength, relevance, citation payload, and user-facing summary
     - Computes overall evidence support strength score (E)
@@ -98,7 +100,6 @@
 
 ## What's Next?
 - Voice-to-text event logging
-- Migration to PostgreSQL to support more users with disk encryption
 - Improved models
 - Improved token security and endpoint authentication guard
 - Admin and user role separation

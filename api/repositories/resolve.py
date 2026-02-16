@@ -23,7 +23,7 @@ def resolve_item_id(item_name: str) -> int:
     cursor.execute(
         """
         SELECT id FROM items
-        WHERE lower(name) = lower(?)
+        WHERE lower(name) = lower(%s)
         LIMIT 1
         """,
         (normalized,),
@@ -36,7 +36,7 @@ def resolve_item_id(item_name: str) -> int:
     cursor.execute(
         """
         SELECT item_id FROM items_aliases
-        WHERE lower(alias) = lower(?)
+        WHERE lower(alias) = lower(%s)
         LIMIT 1
         """,
         (normalized,),
@@ -49,15 +49,16 @@ def resolve_item_id(item_name: str) -> int:
     cursor.execute(
         """
         INSERT INTO items (name, category)
-        VALUES (?, ?)
+        VALUES (%s, %s)
+        RETURNING id
         """,
         (normalized, "Uncategorized"),
     )
-    new_id = cursor.lastrowid
+    new_id = cursor.fetchone()["id"]
     cursor.execute(
         """
         INSERT INTO items_aliases (item_id, alias)
-        VALUES (?, ?)
+        VALUES (%s, %s)
         """,
         (new_id, normalized),
     )
@@ -73,7 +74,7 @@ def resolve_symptom_id(symptom_name: str) -> int:
     cursor.execute(
         """
         SELECT id FROM symptoms
-        WHERE lower(name) = lower(?)
+        WHERE lower(name) = lower(%s)
         LIMIT 1
         """,
         (normalized,),
@@ -86,7 +87,7 @@ def resolve_symptom_id(symptom_name: str) -> int:
     cursor.execute(
         """
         SELECT symptom_id FROM symptoms_aliases
-        WHERE lower(alias) = lower(?)
+        WHERE lower(alias) = lower(%s)
         LIMIT 1
         """,
         (normalized,),
@@ -99,15 +100,16 @@ def resolve_symptom_id(symptom_name: str) -> int:
     cursor.execute(
         """
         INSERT INTO symptoms (name, description)
-        VALUES (?, ?)
+        VALUES (%s, %s)
+        RETURNING id
         """,
         (normalized, None),
     )
-    new_id = cursor.lastrowid
+    new_id = cursor.fetchone()["id"]
     cursor.execute(
         """
         INSERT INTO symptoms_aliases (symptom_id, alias)
-        VALUES (?, ?)
+        VALUES (%s, %s)
         """,
         (new_id, normalized),
     )

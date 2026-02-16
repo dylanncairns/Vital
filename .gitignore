@@ -4,8 +4,9 @@
 .open
 
 # Python cache
-__pycache__/
+**/__pycache__/
 api/__pycache__/
+.pytest_cache/
 
 # Xcode / Swift archive
 DerivedData/
@@ -14,12 +15,12 @@ DerivedData/
 build/
 apps/archive
 
-# Ingested papers
-data/rag_sources
-
-# Database with user info
-data/central.db 
-data/seed.sql
-
 # venv
 .venv311
+
+# JS artifacts & workspace settings
+apps/*/node_modules/
+apps/*/.expo/
+apps/*/.expo-shared/
+apps/*/dist/
+apps/*/.vscode/

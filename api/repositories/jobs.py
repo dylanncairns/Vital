@@ -54,11 +54,11 @@ def enqueue_background_job(
         existing = conn.execute(
             """
             SELECT id FROM background_jobs
-            WHERE user_id = ?
-              AND job_type = ?
+            WHERE user_id = %s
+              AND job_type = %s
               AND status IN ('pending', 'running')
-              AND ((item_id IS NULL AND ? IS NULL) OR item_id = ?)
-              AND ((symptom_id IS NULL AND ? IS NULL) OR symptom_id = ?)
+              AND ((item_id IS NULL AND %s IS NULL) OR item_id = %s)
+              AND ((symptom_id IS NULL AND %s IS NULL) OR symptom_id = %s)
             LIMIT 1
             """,
             (user_id, job_type, item_id, item_id, symptom_id, symptom_id),
@@ -73,7 +73,8 @@ def enqueue_background_job(
                 user_id, job_type, item_id, symptom_id, payload_json,
                 status, attempts, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, 'pending', 0, %s, %s)
+            RETURNING id
             """,
             (
                 user_id,
@@ -86,7 +87,7 @@ def enqueue_background_job(
             ),
         )
         conn.commit()
-        return int(cursor.lastrowid)
+        return int(cursor.fetchone()["id"])
     finally:
         conn.close()
 
@@ -98,10 +99,10 @@ def list_pending_jobs(*, limit: int = 20) -> list[dict[str, Any]]:
         conn.execute(
             """
             UPDATE background_jobs
-            SET status = 'pending', updated_at = ?
+            SET status = 'pending', updated_at = %s
             WHERE status = 'running'
               AND updated_at IS NOT NULL
-              AND julianday(updated_at) < julianday('now', '-10 minutes')
+              AND updated_at::timestamptz < (NOW() - INTERVAL '10 minutes')
             """,
             (_now_iso(),),
         )
@@ -112,7 +113,7 @@ def list_pending_jobs(*, limit: int = 20) -> list[dict[str, Any]]:
             FROM background_jobs
             WHERE status = 'pending'
             ORDER BY created_at ASC, id ASC
-            LIMIT ?
+            LIMIT %s
             """,
             (limit,),
         ).fetchall()
@@ -127,9 +128,9 @@ def list_pending_jobs(*, limit: int = 20) -> list[dict[str, Any]]:
                 SELECT id, user_id, job_type, item_id, symptom_id, payload_json, status, attempts, updated_at
                 FROM background_jobs
                 WHERE status = 'failed'
-                  AND attempts < ?
+                  AND attempts < %s
                 ORDER BY updated_at ASC, created_at ASC, id ASC
-                LIMIT ?
+                LIMIT %s
                 """,
                 (DEFAULT_MAX_FAILED_ATTEMPTS, max(remaining * 5, 25)),
             ).fetchall()
@@ -157,14 +158,15 @@ def list_pending_jobs(*, limit: int = 20) -> list[dict[str, Any]]:
 
         job_ids = [int(row["id"]) for row in selected_rows]
         now_iso = _now_iso()
-        conn.executemany(
-            """
-            UPDATE background_jobs
-            SET status = 'running', updated_at = ?
-            WHERE id = ?
-            """,
-            [(now_iso, job_id) for job_id in job_ids],
-        )
+        with conn.cursor() as cursor:
+            cursor.executemany(
+                """
+                UPDATE background_jobs
+                SET status = 'running', updated_at = %s
+                WHERE id = %s
+                """,
+                [(now_iso, job_id) for job_id in job_ids],
+            )
         conn.commit()
 
         out: list[dict[str, Any]] = []
@@ -199,8 +201,8 @@ def mark_job_done(job_id: int) -> None:
         conn.execute(
             """
             UPDATE background_jobs
-            SET status = 'done', updated_at = ?
-            WHERE id = ?
+            SET status = 'done', updated_at = %s
+            WHERE id = %s
             """,
             (_now_iso(), job_id),
         )
@@ -217,9 +219,9 @@ def mark_job_failed(job_id: int, error: str) -> None:
             UPDATE background_jobs
             SET status = 'failed',
                 attempts = attempts + 1,
-                last_error = ?,
-                updated_at = ?
-            WHERE id = ?
+                last_error = %s,
+                updated_at = %s
+            WHERE id = %s
             """,
             (error[:500], _now_iso(), job_id),
         )
@@ -234,10 +236,10 @@ def count_jobs(*, user_id: int | None = None, status: str | None = None) -> int:
         sql = "SELECT COUNT(*) AS c FROM background_jobs WHERE 1=1"
         params: list[Any] = []
         if user_id is not None:
-            sql += " AND user_id = ?"
+            sql += " AND user_id = %s"
             params.append(user_id)
         if status is not None:
-            sql += " AND status = ?"
+            sql += " AND status = %s"
             params.append(status)
         row = conn.execute(sql, tuple(params)).fetchone()
         return int(row["c"]) if row is not None else 0
@@ -255,7 +257,7 @@ def maybe_enqueue_model_retrain(
         existing = conn.execute(
             """
             SELECT id FROM background_jobs
-            WHERE job_type = ?
+            WHERE job_type = %s
               AND status IN ('pending', 'running')
             LIMIT 1
             """,
@@ -294,7 +296,8 @@ def maybe_enqueue_model_retrain(
                 user_id, job_type, item_id, symptom_id, payload_json,
                 status, attempts, created_at, updated_at
             )
-            VALUES (?, ?, NULL, NULL, ?, 'pending', 0, ?, ?)
+            VALUES (%s, %s, NULL, NULL, %s, 'pending', 0, %s, %s)
+            RETURNING id
             """,
             (
                 int(trigger_user_id),
@@ -307,13 +310,13 @@ def maybe_enqueue_model_retrain(
         conn.execute(
             """
             UPDATE model_retrain_state
-            SET last_enqueued_total_events = ?, updated_at = ?
+            SET last_enqueued_total_events = %s, updated_at = %s
             WHERE id = 1
             """,
             (total_events, now_iso),
         )
         conn.commit()
-        return int(cursor.lastrowid)
+        return int(cursor.fetchone()["id"])
     finally:
         conn.close()
 
@@ -328,9 +331,9 @@ def mark_model_retrain_completed(*, trained_total_events: int | None = None) -> 
         conn.execute(
             """
             UPDATE model_retrain_state
-            SET last_trained_total_events = ?,
-                last_enqueued_total_events = ?,
-                updated_at = ?
+            SET last_trained_total_events = %s,
+                last_enqueued_total_events = %s,
+                updated_at = %s
             WHERE id = 1
             """,
             (int(trained_total_events), int(trained_total_events), _now_iso()),

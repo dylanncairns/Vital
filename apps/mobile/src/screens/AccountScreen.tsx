@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from "react";
-import { Pressable, Text, TextInput, View } from "react-native";
+import { Alert, Pressable, Text, TextInput, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { useAuth } from "../auth/AuthContext";
@@ -7,7 +7,7 @@ import { useAuth } from "../auth/AuthContext";
 const FONT_SEMIBOLD = "Exo2-SemiBold";
 
 export default function AccountScreen() {
-  const { user, logout, updateName } = useAuth();
+  const { user, logout, updateName, deleteAccount } = useAuth();
   const [name, setName] = useState(user?.name ?? "");
   const [editingName, setEditingName] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -29,6 +29,33 @@ export default function AccountScreen() {
     } finally {
       setBusy(false);
     }
+  }
+
+  function onDeleteAccountPress() {
+    if (busy) return;
+    Alert.alert(
+      "Delete account?",
+      "This will permanently remove your account and timeline data.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: async () => {
+            setBusy(true);
+            setError(null);
+            setStatus(null);
+            try {
+              await deleteAccount();
+            } catch (err: any) {
+              setError(err?.message ?? "Failed to delete account.");
+            } finally {
+              setBusy(false);
+            }
+          },
+        },
+      ]
+    );
   }
 
   return (
@@ -117,6 +144,17 @@ export default function AccountScreen() {
 
         {status ? <Text style={{ color: "#0A7A4F" }}>{status}</Text> : null}
         {error ? <Text style={{ color: "#B42318" }}>{error}</Text> : null}
+        <Pressable
+          onPress={onDeleteAccountPress}
+          disabled={busy}
+          style={{
+            marginTop: 6,
+            alignItems: "center",
+            opacity: busy ? 0.6 : 1,
+          }}
+        >
+          <Text style={{ color: "#8C92A6", fontFamily: "Exo2-Regular", fontSize: 12 }}>Delete account</Text>
+        </Pressable>
       </View>
     </SafeAreaView>
   );

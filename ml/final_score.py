@@ -11,14 +11,15 @@ from typing import Any
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import average_precision_score, brier_score_loss, roc_auc_score
 
-from api.db import DB_PATH
+DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+MODELS_DIR = DATA_DIR / "models"
 
 
-DEFAULT_FUSION_MODEL_PATH = DB_PATH.parent / "final_score_fusion.pkl"
-DEFAULT_FUSION_CALIBRATOR_PATH = DB_PATH.parent / "final_score_calibrator.pkl"
-DEFAULT_FUSION_MONITOR_PATH = DB_PATH.parent / "final_score_monitor.json"
-DEFAULT_THRESHOLDS_PATH = DB_PATH.parent / "decision_thresholds.json"
-DEFAULT_SCORE_GUARDRAILS_PATH = DB_PATH.parent / "score_guardrails.json"
+DEFAULT_FUSION_MODEL_PATH = MODELS_DIR / "final_score_fusion.pkl"
+DEFAULT_FUSION_CALIBRATOR_PATH = MODELS_DIR / "final_score_calibrator.pkl"
+DEFAULT_FUSION_MONITOR_PATH = MODELS_DIR / "final_score_monitor.json"
+DEFAULT_THRESHOLDS_PATH = MODELS_DIR / "decision_thresholds.json"
+DEFAULT_SCORE_GUARDRAILS_PATH = MODELS_DIR / "score_guardrails.json"
 
 _FUSION_MODEL_CACHE: dict[str, Any] = {}
 _FUSION_CALIBRATOR_CACHE: dict[str, Any] = {}

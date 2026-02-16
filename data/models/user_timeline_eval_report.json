@@ -1,0 +1,14 @@
+{
+  "created_at": "2026-02-16T20:02:21.821814+00:00",
+  "dataset_source": "hybrid",
+  "threshold_used": 0.1333981964486277,
+  "users_in_validation": 1,
+  "per_user": {
+    "1": {
+      "count": 20.0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "avg_probability": 0.865500909643956
+    }
+  }
+}

@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useMemo, useState } from "react";
 
 import {
+  deleteMe,
   AuthUser,
   fetchMe,
   login as loginApi,
@@ -19,6 +20,7 @@ type AuthContextValue = {
   logout: () => Promise<void>;
   hydrateFromToken: (token: string) => Promise<void>;
   updateName: (name: string) => Promise<void>;
+  deleteAccount: () => Promise<void>;
 };
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -63,6 +65,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(next);
   }
 
+  async function deleteAccount() {
+    try {
+      await deleteMe();
+    } finally {
+      setAuthToken(null);
+      setToken(null);
+      setUser(null);
+    }
+  }
+
   const value = useMemo<AuthContextValue>(
     () => ({
       user,
@@ -73,6 +85,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       logout,
       hydrateFromToken,
       updateName,
+      deleteAccount,
     }),
     [user, token]
   );

@@ -59,14 +59,14 @@ class SymptomRow:
 
 def _evidence_lookup_for_pair(conn, *, item_id: int, symptom_id: int) -> dict[str, float]:
     ingredient_rows = conn.execute(
-        "SELECT ingredient_id FROM items_ingredients WHERE item_id = ?",
+        "SELECT ingredient_id FROM items_ingredients WHERE item_id = %s",
         (item_id,),
     ).fetchall()
     ingredient_ids = [int(row["ingredient_id"]) for row in ingredient_rows if row["ingredient_id"] is not None]
-    where_parts = ["(c.item_id = ?)"]
+    where_parts = ["(c.item_id = %s)"]
     params: list[Any] = [item_id, symptom_id]
     if ingredient_ids:
-        placeholders = ",".join("?" for _ in ingredient_ids)
+        placeholders = ",".join("%s" for _ in ingredient_ids)
         where_parts.append(f"(c.ingredient_id IN ({placeholders}))")
         params.extend(ingredient_ids)
     where_clause = " OR ".join(where_parts)
@@ -80,7 +80,7 @@ def _evidence_lookup_for_pair(conn, *, item_id: int, symptom_id: int) -> dict[st
             c.risk_of_bias AS risk_of_bias,
             c.llm_confidence AS llm_confidence
         FROM claims c
-        WHERE c.symptom_id = ?
+        WHERE c.symptom_id = %s
           AND ({where_clause})
         """,
         tuple(params),
@@ -150,7 +150,7 @@ def _load_user_events(conn, *, user_id: int) -> tuple[list[ExposureRow], list[Sy
                 SELECT 1 FROM exposure_expansions x WHERE x.exposure_event_id = e.id
             ) THEN 1 ELSE 0 END AS has_ingredient_expansion
         FROM exposure_events e
-        WHERE e.user_id = ?
+        WHERE e.user_id = %s
           AND COALESCE(e.timestamp, e.time_range_start) IS NOT NULL
         ORDER BY ts ASC
         """,
@@ -165,7 +165,7 @@ def _load_user_events(conn, *, user_id: int) -> tuple[list[ExposureRow], list[Sy
             s.severity AS severity,
             s.time_confidence AS time_confidence
         FROM symptom_events s
-        WHERE s.user_id = ?
+        WHERE s.user_id = %s
           AND COALESCE(s.timestamp, s.time_range_start) IS NOT NULL
         ORDER BY ts ASC
         """,

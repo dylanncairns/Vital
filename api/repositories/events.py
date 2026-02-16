@@ -24,7 +24,7 @@ def list_events(user_id: int):
             NULL AS symptom_name,
             NULL AS severity
         FROM exposure_events e JOIN items i ON i.id = e.item_id
-        WHERE e.user_id = ?
+        WHERE e.user_id = %s
                    
         UNION ALL
                    
@@ -45,7 +45,7 @@ def list_events(user_id: int):
             s.severity AS severity
         FROM symptom_events s
         JOIN symptoms sy ON sy.id = s.symptom_id
-        WHERE s.user_id = ?
+        WHERE s.user_id = %s
         
         ORDER BY timestamp DESC
         """,

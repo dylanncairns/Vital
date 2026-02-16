@@ -1,9 +1,9 @@
 {
-  "created_at": "2026-02-14T09:02:02.731524+00:00",
+  "created_at": "2026-02-16T20:02:21.821372+00:00",
   "source": "hybrid",
   "target_precision": 0.75,
   "min_evidence_strength": 0.2,
-  "min_model_probability": 0.15423506532793022,
+  "min_model_probability": 0.1333981964486277,
   "min_overall_confidence": 0.45,
   "min_cooccurrence_for_supported": 2.0,
   "min_support_direction": 0.1,

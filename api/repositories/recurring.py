@@ -44,7 +44,7 @@ def list_recurring_rules(user_id: int) -> list[dict[str, Any]]:
                 r.updated_at
             FROM recurring_exposure_rules r
             JOIN items i ON i.id = r.item_id
-            WHERE r.user_id = ?
+            WHERE r.user_id = %s
             ORDER BY r.id DESC
             """,
             (user_id,),
@@ -73,7 +73,8 @@ def create_recurring_rule(
                 user_id, item_id, route, start_at, interval_hours, time_confidence,
                 is_active, last_generated_at, notes, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, 1, NULL, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, 1, NULL, %s, %s, %s)
+            RETURNING id
             """,
             (
                 int(user_id),
@@ -88,7 +89,7 @@ def create_recurring_rule(
             ),
         )
         conn.commit()
-        return int(cursor.lastrowid)
+        return int(cursor.fetchone()["id"])
     finally:
         conn.close()
 
@@ -107,7 +108,7 @@ def update_recurring_rule(
     conn = get_connection()
     try:
         row = conn.execute(
-            "SELECT id FROM recurring_exposure_rules WHERE id = ? AND user_id = ?",
+            "SELECT id FROM recurring_exposure_rules WHERE id = %s AND user_id = %s",
             (int(rule_id), int(user_id)),
         ).fetchone()
         if row is None:
@@ -115,35 +116,35 @@ def update_recurring_rule(
         updates: list[str] = []
         params: list[Any] = []
         if route is not None:
-            updates.append("route = ?")
+            updates.append("route = %s")
             params.append(route)
         if start_at is not None:
-            updates.append("start_at = ?")
+            updates.append("start_at = %s")
             params.append(start_at)
             updates.append("last_generated_at = NULL")
         if interval_hours is not None:
-            updates.append("interval_hours = ?")
+            updates.append("interval_hours = %s")
             params.append(int(interval_hours))
             updates.append("last_generated_at = NULL")
         if time_confidence is not None:
-            updates.append("time_confidence = ?")
+            updates.append("time_confidence = %s")
             params.append(time_confidence)
         if is_active is not None:
-            updates.append("is_active = ?")
+            updates.append("is_active = %s")
             params.append(1 if is_active else 0)
         if notes is not None:
-            updates.append("notes = ?")
+            updates.append("notes = %s")
             params.append(notes)
         if not updates:
             return True
-        updates.append("updated_at = ?")
+        updates.append("updated_at = %s")
         params.append(_now_iso())
         params.extend([int(rule_id), int(user_id)])
         conn.execute(
             f"""
             UPDATE recurring_exposure_rules
             SET {", ".join(updates)}
-            WHERE id = ? AND user_id = ?
+            WHERE id = %s AND user_id = %s
             """,
             tuple(params),
         )
@@ -157,7 +158,7 @@ def delete_recurring_rule(*, user_id: int, rule_id: int) -> bool:
     conn = get_connection()
     try:
         cursor = conn.execute(
-            "DELETE FROM recurring_exposure_rules WHERE id = ? AND user_id = ?",
+            "DELETE FROM recurring_exposure_rules WHERE id = %s AND user_id = %s",
             (int(rule_id), int(user_id)),
         )
         conn.commit()
@@ -179,7 +180,7 @@ def materialize_recurring_exposures(
             SELECT
                 id, item_id, route, start_at, interval_hours, time_confidence, last_generated_at
             FROM recurring_exposure_rules
-            WHERE user_id = ? AND is_active = 1
+            WHERE user_id = %s AND is_active = 1
             ORDER BY id ASC
             """,
             (int(user_id),),
@@ -211,7 +212,8 @@ def materialize_recurring_exposures(
                         user_id, item_id, timestamp, time_range_start, time_range_end,
                         time_confidence, ingested_at, raw_text, route
                     )
-                    VALUES (?, ?, ?, NULL, NULL, ?, ?, ?, ?)
+                    VALUES (%s, %s, %s, NULL, NULL, %s, %s, %s, %s)
+                    RETURNING id
                     """,
                     (
                         int(user_id),
@@ -223,7 +225,7 @@ def materialize_recurring_exposures(
                         rule["route"] or "other",
                     ),
                 )
-                expand_exposure_event(int(cursor.lastrowid), conn=conn)
+                expand_exposure_event(int(cursor.fetchone()["id"]), conn=conn)
                 inserted_item_ids.append(int(rule["item_id"]))
                 newest_generated = next_dt
                 generated_count += 1
@@ -233,8 +235,8 @@ def materialize_recurring_exposures(
                 conn.execute(
                     """
                     UPDATE recurring_exposure_rules
-                    SET last_generated_at = ?, updated_at = ?
-                    WHERE id = ? AND user_id = ?
+                    SET last_generated_at = %s, updated_at = %s
+                    WHERE id = %s AND user_id = %s
                     """,
                     (
                         newest_generated.isoformat(),

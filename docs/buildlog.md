@@ -253,7 +253,7 @@
     - does this only when a citation_audit job is queued (see runbook.md)
 - committing here before database migration with alembic
 
-## Commits 21-29
+## Commits 21-31
 - added requirements for deploying and building on Render
 - configured web support in apps/web (mostly copied from apps/mobile)
 - fixed frontend package handling in package.json
@@ -264,3 +264,20 @@
 - debugged ingestion pipeline API call for parsing
     - addressed timezone issues with API local vs user local
     - reinforced API call context and logic
+
+## Commit 32
+- SQLite --> PostgreSQL migration
+- multi version concurrency control gives each transaction a snapshot of the database, allowing multiple concurrent transactions from many users without lock or versioning issues
+- all code updated to use DATABASE_URL and Postgres syntax instead of explicit SQLite path and syntax
+- clean up repo (model eval moved to data/models, old SQL files removed)
+- debug whatever happened to rag_sources (empty for some reason?)
+    - create table that replaces functionality of rag_sources (where retrieved evidence links and abstracts are stored) in schema.sql
+    - wired vector ingest to write sources in DB instead of local files
+    - no more need for rag_sources, main and job worker still call same function names but persistent local data no longer needed
+        - migration essential since table is already initialized, so without new migration path already existing DB would miss the new rag_source_documents table and vector ingest path would be connecting to nothing / runtime failure
+- moved model eval to data/models
+- rag was retrieving claims but evidence score was a float, which was fine in sqlite but caused errors in postgres with type integer
+- lots of other postgres --> rag.py interaction debugging
+- small UI updates for a new fresh user display
+- add delete account functionality e2e
+- note: need to add max-attempt ceiling for evidence jobs (mark as failed permanently after x tries) so i dont get heinously charged by OpenAI

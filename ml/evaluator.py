@@ -17,7 +17,8 @@ from sklearn.isotonic import IsotonicRegression
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import precision_recall_curve
 
-from api.db import DB_PATH
+DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+MODELS_DIR = DATA_DIR / "models"
 
 ROUTE_BUCKETS = (
     "ingestion",
@@ -64,10 +65,10 @@ FEATURE_ORDER = [
     "time_confidence_score",
 ] + ROUTE_TEMPORAL_FEATURES
 
-DEFAULT_XGBOOST_MODEL_PATH = DB_PATH.parent / "model_artifact.xgb.json"
-DEFAULT_CURATED_TRAINING_PATH = DB_PATH.parent / "curated_linkages.json"
-DEFAULT_CALIBRATOR_PATH = DB_PATH.parent / "model_calibrator.pkl"
-DEFAULT_THRESHOLDS_PATH = DB_PATH.parent / "decision_thresholds.json"
+DEFAULT_XGBOOST_MODEL_PATH = MODELS_DIR / "model_artifact.xgb.json"
+DEFAULT_CURATED_TRAINING_PATH = MODELS_DIR / "curated_linkages.json"
+DEFAULT_CALIBRATOR_PATH = MODELS_DIR / "model_calibrator.pkl"
+DEFAULT_THRESHOLDS_PATH = MODELS_DIR / "decision_thresholds.json"
 DEFAULT_MAX_MODEL_THRESHOLD = float(os.getenv("MAX_MODEL_THRESHOLD", "0.55"))
 DEFAULT_MAX_OVERALL_THRESHOLD = float(os.getenv("MAX_OVERALL_THRESHOLD", "0.65"))
 

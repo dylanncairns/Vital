@@ -219,7 +219,7 @@ def _upsert_paper(conn, paper: dict[str, Any], *, ingested_at: str) -> int:
     paper_url = paper.get("url")
     if paper_url is not None and isinstance(paper_url, str) and paper_url.strip():
         existing = conn.execute(
-            "SELECT id FROM papers WHERE url = ? LIMIT 1",
+            "SELECT id FROM papers WHERE url = %s LIMIT 1",
             (paper_url.strip(),),
         ).fetchone()
     else:
@@ -228,8 +228,8 @@ def _upsert_paper(conn, paper: dict[str, Any], *, ingested_at: str) -> int:
             """
             SELECT id
             FROM papers
-            WHERE title = ?
-              AND COALESCE(publication_date, '') = COALESCE(?, '')
+            WHERE title = %s
+              AND COALESCE(publication_date, '') = COALESCE(%s, '')
             LIMIT 1
             """,
             (paper.get("title"), paper.get("publication_date")),
@@ -239,7 +239,8 @@ def _upsert_paper(conn, paper: dict[str, Any], *, ingested_at: str) -> int:
     cursor = conn.execute(
         """
         INSERT INTO papers (title, url, abstract, publication_date, source, ingested_at)
-        VALUES (?, ?, ?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        RETURNING id
         """,
         (
             paper["title"],
@@ -250,7 +251,7 @@ def _upsert_paper(conn, paper: dict[str, Any], *, ingested_at: str) -> int:
             ingested_at,
         ),
     )
-    return int(cursor.lastrowid)
+    return int(cursor.fetchone()["id"])
 
 
 def _claim_text(row: dict[str, Any]) -> str:
@@ -308,11 +309,11 @@ def retrieve_claim_evidence(
     where_filters: list[str] = []
     params: list[Any] = [symptom_id]
     if ingredient_ids:
-        placeholders = ",".join("?" for _ in ingredient_ids)
+        placeholders = ",".join("%s" for _ in ingredient_ids)
         where_filters.append(f"c.ingredient_id IN ({placeholders})")
         params.extend(sorted(ingredient_ids))
     if item_id is not None:
-        where_filters.append("c.item_id = ?")
+        where_filters.append("c.item_id = %s")
         params.append(item_id)
         # Fallback path: if claims are ingredient-linked and exposure expansion rows are missing,
         # recover ingredient IDs from item composition.
@@ -321,7 +322,7 @@ def retrieve_claim_evidence(
                 """
                 SELECT ingredient_id
                 FROM items_ingredients
-                WHERE item_id = ?
+                WHERE item_id = %s
                 """,
                 (item_id,),
             ).fetchall()
@@ -331,7 +332,7 @@ def retrieve_claim_evidence(
                 if row["ingredient_id"] is not None
             }
             if fallback_ingredient_ids:
-                placeholders = ",".join("?" for _ in fallback_ingredient_ids)
+                placeholders = ",".join("%s" for _ in fallback_ingredient_ids)
                 where_filters.append(f"c.ingredient_id IN ({placeholders})")
                 params.extend(sorted(fallback_ingredient_ids))
     if not where_filters:
@@ -363,7 +364,7 @@ def retrieve_claim_evidence(
             p.source AS source
         FROM claims c
         JOIN papers p ON p.id = c.paper_id
-        WHERE c.symptom_id = ?
+        WHERE c.symptom_id = %s
           AND ({where_clause})
         """,
         tuple(params),
@@ -374,18 +375,18 @@ def retrieve_claim_evidence(
     ingredient_tokens: list[str] = []
     symptom_tokens: list[str] = []
     if item_id is not None:
-        item_row = conn.execute("SELECT name FROM items WHERE id = ? LIMIT 1", (item_id,)).fetchone()
+        item_row = conn.execute("SELECT name FROM items WHERE id = %s LIMIT 1", (item_id,)).fetchone()
         if item_row and item_row["name"]:
             item_tokens = _candidate_tokens(str(item_row["name"]))
     if ingredient_ids:
-        placeholders = ",".join("?" for _ in ingredient_ids)
+        placeholders = ",".join("%s" for _ in ingredient_ids)
         ing_rows = conn.execute(
             f"SELECT name FROM ingredients WHERE id IN ({placeholders})",
             tuple(sorted(ingredient_ids)),
         ).fetchall()
         for ing_row in ing_rows:
             ingredient_tokens.extend(_candidate_tokens(str(ing_row["name"] or "")))
-    symptom_row = conn.execute("SELECT name FROM symptoms WHERE id = ? LIMIT 1", (symptom_id,)).fetchone()
+    symptom_row = conn.execute("SELECT name FROM symptoms WHERE id = %s LIMIT 1", (symptom_id,)).fetchone()
     if symptom_row and symptom_row["name"]:
         symptom_tokens = _candidate_tokens(str(symptom_row["name"]))
 
@@ -451,7 +452,7 @@ def ingest_paper_claim_chunks(
                 study_design, study_quality_score, population_match, temporality_match, risk_of_bias, llm_confidence,
                 evidence_polarity_and_strength
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 item_id,
@@ -1249,7 +1250,7 @@ def sync_claims_for_candidates(
                         """
                         SELECT 1
                         FROM claims
-                        WHERE ingredient_id = ? AND symptom_id = ?
+                        WHERE ingredient_id = %s AND symptom_id = %s
                         LIMIT 1
                         """,
                         (int(ingredient_id), int(symptom_id)),
@@ -1282,15 +1283,15 @@ def sync_claims_for_candidates(
                 paper_url = row.get("url")
                 if isinstance(paper_url, str) and paper_url.strip():
                     existing_paper = conn.execute(
-                        "SELECT id FROM papers WHERE url = ? LIMIT 1",
+                        "SELECT id FROM papers WHERE url = %s LIMIT 1",
                         (paper_url.strip(),),
                     ).fetchone()
                 else:
                     existing_paper = conn.execute(
                         """
                         SELECT id FROM papers
-                        WHERE title = ?
-                          AND COALESCE(publication_date, '') = COALESCE(?, '')
+                        WHERE title = %s
+                          AND COALESCE(publication_date, '') = COALESCE(%s, '')
                         LIMIT 1
                         """,
                         (row["title"], row.get("publication_date")),
@@ -1317,11 +1318,11 @@ def sync_claims_for_candidates(
                     duplicate = conn.execute(
                         """
                         SELECT 1 FROM claims
-                        WHERE paper_id = ?
-                          AND symptom_id = ?
-                          AND chunk_hash = ?
-                          AND ((item_id IS NULL AND ? IS NULL) OR item_id = ?)
-                          AND ((ingredient_id IS NULL AND ? IS NULL) OR ingredient_id = ?)
+                        WHERE paper_id = %s
+                          AND symptom_id = %s
+                          AND chunk_hash = %s
+                          AND item_id IS NOT DISTINCT FROM %s
+                          AND ingredient_id IS NOT DISTINCT FROM %s
                         LIMIT 1
                         """,
                         (
@@ -1329,8 +1330,6 @@ def sync_claims_for_candidates(
                             row_symptom_id,
                             snippet_hash,
                             row_item_id,
-                            row_item_id,
-                            row_ingredient_id,
                             row_ingredient_id,
                         ),
                     ).fetchone()
