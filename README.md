@@ -1,5 +1,5 @@
 # Vital
-***A system for longitudinal health symptom and exposure event logging with personalized, evidence-backed insights***
+***A system for longitudinal health symptom & exposure event logging with personalized, evidence-backed insights***
 
 
 ## Clinical and Safety Scope
