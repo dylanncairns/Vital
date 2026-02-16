@@ -1,9 +1,7 @@
 # Vital
-***A system for longitudinal health symptom & exposure event logging with personalized, evidence-backed insights***
 
-
-## Clinical and Safety Scope
-Vital is an exposure and symptom logging system that exists to provide insight into patterns in the user's log that established research may contextualize as worthy of further investigation, and does not make medical, safety, or causal claims.
+## Purpose and Scope
+***Vital is a system for longitudinal health symptom & exposure logging that exists to provide personalized, evidence-backed insights into patterns in a user's log that established research may contextualize as worthy of further investigation, and does not make medical, safety, or causal claims.***
 
 
 ## User Experience
