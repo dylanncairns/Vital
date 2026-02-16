@@ -88,7 +88,7 @@ def _cors_allow_origins() -> list[str]:
         "http://127.0.0.1:19006",
     ]
 
-_cors_allow_origin_regex = os.getenv("CORS_ALLOW_ORIGIN_REGEX", "").strip() or None
+_cors_allow_origin_regex = os.getenv("CORS_ALLOW_ORIGIN_REGEX", "").strip() or r"^https://.*\.vercel\.app$"
 
 app.add_middleware(
     CORSMiddleware,
