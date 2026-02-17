@@ -6,7 +6,10 @@ const APP_FONT_FAMILY = "Exo2-SemiBold";
 // Navigation tabs for base screens
 // Base screens include timeline display and event logging interface in this git
 export default function TabLayout() {
-  const { isAuthenticated } = useAuth();
+  const { isAuthenticated, isHydrated } = useAuth();
+  if (!isHydrated) {
+    return null;
+  }
   if (!isAuthenticated) {
     return <Redirect href="/auth" />;
   }

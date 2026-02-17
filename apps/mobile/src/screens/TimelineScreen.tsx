@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { View, Text, FlatList, RefreshControl, TouchableOpacity, TextInput, Alert, Modal, Pressable, ScrollView, Button } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useFocusEffect } from "@react-navigation/native";
@@ -38,6 +38,7 @@ export default function TimelineScreen() {
     const [insightsById, setInsightsById] = useState<Record<number, Insight>>({});
     const [selectedInsights, setSelectedInsights] = useState<Insight[]>([]);
     const [verifyingInsightId, setVerifyingInsightId] = useState<number | null>(null);
+    const loadSeqRef = useRef(0);
 
     function eventInsightKey(eventType: "exposure" | "symptom", eventId: number): string {
       return `${eventType}:${eventId}`;
@@ -58,6 +59,14 @@ export default function TimelineScreen() {
     function toIsoFromParts(date: Date): string {
       // Keep the exact instant selected in local picker; backend stores UTC.
       return date.toISOString();
+    }
+
+    function upsertLocalEvent(
+      eventType: "exposure" | "symptom",
+      eventId: number,
+      patch: Partial<TimelineEvent>
+    ) {
+      setEvents((prev) => prev.map((row) => (row.event_type === eventType && row.id === eventId ? { ...row, ...patch } : row)));
     }
 
     function clampDay(year: number, month1: number, day: number): number {
@@ -179,6 +188,7 @@ export default function TimelineScreen() {
 
     const load = useCallback(async (showRefresh: boolean = false) => {
         if (!user) return;
+        const seq = ++loadSeqRef.current;
         if (showRefresh) setRefreshing(true);
         try {
             const [data, links, insights] = await Promise.all([
@@ -205,6 +215,7 @@ export default function TimelineScreen() {
               const bSeconds = (bDate.getHours() * 3600) + (bDate.getMinutes() * 60) + bDate.getSeconds();
               return aSeconds - bSeconds;
             });
+            if (seq !== loadSeqRef.current) return;
             setEvents(sorted);
             const insightLookup: Record<number, Insight> = {};
             for (const insight of insights) {
@@ -230,7 +241,7 @@ export default function TimelineScreen() {
             }
             setEventInsightMap(mapped);
         } finally {
-            if (showRefresh) setRefreshing(false);
+            if (showRefresh && seq === loadSeqRef.current) setRefreshing(false);
         }
     }, [user]);
 
@@ -431,26 +442,33 @@ export default function TimelineScreen() {
                               Alert.alert("Not authenticated", "Please sign in again.");
                               return;
                             }
+                            const nextTimestamp = toIsoFromParts(editDate);
+                            const nextRoute = normalizeRouteValue(editRoute);
+                            const nextSeverity = editSeverity.trim() ? Number(editSeverity) : undefined;
                             await updateEvent(
                               event.event_type,
                               event.id,
                               user.id,
                               isExposure
                                 ? {
-                                    timestamp: toIsoFromParts(editDate),
-                                    route: normalizeRouteValue(editRoute),
+                                    timestamp: nextTimestamp,
+                                    route: nextRoute,
                                   }
                                 : {
-                                    timestamp: toIsoFromParts(editDate),
-                                    severity: editSeverity.trim() ? Number(editSeverity) : undefined,
+                                    timestamp: nextTimestamp,
+                                    severity: nextSeverity,
                                   }
                             );
+                            upsertLocalEvent(event.event_type, event.id, {
+                              timestamp: nextTimestamp,
+                              ...(isExposure ? { route: nextRoute } : { severity: nextSeverity }),
+                            });
                             setEditingKey(null);
                             setEditSeverity("");
                             setEditRoute("");
                             setEditTimePickerOpen(false);
                             setEditRoutePickerOpen(false);
-                            await load();
+                            void load(false);
                           } finally {
                             setBusyKey(null);
                           }
@@ -490,12 +508,15 @@ export default function TimelineScreen() {
                                       return;
                                     }
                                     await deleteEvent(event.event_type, event.id, user.id);
+                                    setEvents((prev) =>
+                                      prev.filter((row) => !(row.event_type === event.event_type && row.id === event.id))
+                                    );
                                     setEditingKey(null);
                                     setEditSeverity("");
                                     setEditRoute("");
                                     setEditTimePickerOpen(false);
                                     setEditRoutePickerOpen(false);
-                                    await load();
+                                    void load(false);
                                   } finally {
                                     setBusyKey(null);
                                   }

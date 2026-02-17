@@ -8,13 +8,17 @@ import { useAuth } from "../src/auth/AuthContext";
 const FONT_SEMIBOLD = "Exo2-SemiBold";
 
 export default function AuthScreen() {
-  const { isAuthenticated, login, register } = useAuth();
+  const { isAuthenticated, isHydrated, login, register } = useAuth();
   const [mode, setMode] = useState<"login" | "register">("login");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  if (!isHydrated) {
+    return null;
+  }
 
   if (isAuthenticated) {
     return <Redirect href="/timeline" />;

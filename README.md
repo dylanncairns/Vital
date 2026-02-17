@@ -100,7 +100,8 @@
 
 ## What's Next?
 - Voice-to-text event logging
-- Improved models
+- Better brand-specific item-ingredients expansion
+- Improved model computation
 - Improved token security and endpoint authentication guard
 - Admin and user role separation
 - Publication!
