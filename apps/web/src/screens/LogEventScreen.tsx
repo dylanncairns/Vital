@@ -89,6 +89,7 @@ export default function LogEventScreen() {
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [textStatus, setTextStatus] = useState<string | null>(null);
+  const [textSubmitting, setTextSubmitting] = useState(false);
   const [, setRecurringRules] = useState<RecurringExposureRule[]>([]);
 
   const startIso = useMemo(() => toIsoFromParts(startDate), [startDate]);
@@ -174,6 +175,8 @@ export default function LogEventScreen() {
       return;
     }
     try {
+      setTextSubmitting(true);
+      setTextStatus("Logging...");
       if (!user) {
         setError("Not authenticated.");
         return;
@@ -183,6 +186,9 @@ export default function LogEventScreen() {
       setRawText("");
     } catch (err: any) {
       setError(err?.message ?? "Failed to ingest text.");
+      setTextStatus(null);
+    } finally {
+      setTextSubmitting(false);
     }
   }
 
@@ -268,7 +274,7 @@ export default function LogEventScreen() {
             multiline
           />
           <View style={{ marginTop: 10 }}>
-            <Button title="Log Text" onPress={submitText} />
+            <Button title={textSubmitting ? "Logging..." : "Log Text"} onPress={submitText} disabled={textSubmitting} />
           </View>
           {textStatus ? <Text style={{ marginTop: 8, color: "#0A7A4F" }}>{textStatus}</Text> : null}
         </View>

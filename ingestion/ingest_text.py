@@ -37,9 +37,27 @@ class ParsedEvent:
     source_text: str | None = None
 
 # Regex for identifying different parts of logged entries within text blurb
-_EXPOSURE_VERBS = re.compile(r"\b(ate|eaten|drank|drink|used|apply|applied|took|take|smoked)\b", re.I)
+_EXPOSURE_VERBS = re.compile(
+    r"\b(ate|eat|eaten|eating|drank|drink|drinking|used|use|using|apply|applied|took|take|taking|swallowed|ingested|smoked)\b",
+    re.I,
+)
 _CONTEXT_EXPOSURE_RE = re.compile(
     r"\b(went\s+to|visited|was\s+at|at\s+the|club|party|bar|concert|festival|crowd)\b",
+    re.I,
+)
+_CONTEXT_PLACE_RE = re.compile(
+    r"\b("
+    r"work|office|workplace|school|campus|class|gym|home|hospital|clinic|"
+    r"airport|restaurant|cafe|coffee\s+shop|bar|club|party|concert|festival|"
+    r"mall|store|subway|bus|train"
+    r")\b",
+    re.I,
+)
+_AT_PLACE_EXPOSURE_RE = re.compile(
+    r"\b(?:i\s+am\s+at|i'm\s+at|im\s+at|at)\s+(?:the\s+)?"
+    r"(work|office|workplace|school|campus|class|gym|home|hospital|clinic|"
+    r"airport|restaurant|cafe|coffee\s+shop|bar|club|party|concert|festival|"
+    r"mall|store|subway|bus|train)\b",
     re.I,
 )
 _SEVERITY_RE = re.compile(r"\b(severity|sev|pain)\s*[:=]?\s*(\d)\b", re.I)
@@ -152,6 +170,9 @@ _ABS_MONTH_DATE_RE = re.compile(
     re.I,
 )
 _ANAPHORIC_DAYPART_RE = re.compile(r"\bthat\s+(morning|afternoon|evening|night|day)\b", re.I)
+_NOW_RE = re.compile(r"\b(right now|just now|now)\b", re.I)
+_EARLIER_TODAY_RE = re.compile(r"\bearlier today\b", re.I)
+_LATER_TODAY_RE = re.compile(r"\blater today\b", re.I)
 
 
 def _apply_daypart_to_base(base: datetime, daypart: str) -> datetime:
@@ -201,6 +222,38 @@ def _resolve_anaphoric_daypart_time(
     tz = local_tz or _LOCAL_TZ
     anchor_local = anchor.astimezone(tz)
     resolved_local = _apply_daypart_to_base(anchor_local, match.group(1))
+    return resolved_local.astimezone(timezone.utc).isoformat()
+
+
+def _resolve_relative_clause_time(
+    text: str,
+    *,
+    context_timestamp: str | None,
+    context_start: str | None,
+    context_end: str | None,
+    local_tz=None,
+) -> str | None:
+    has_later = re.search(r"\blater\b", text, re.I) is not None
+    has_earlier = re.search(r"\bearlier\b", text, re.I) is not None
+    if not has_later and not has_earlier:
+        return None
+    anchor_iso = _context_anchor_iso(
+        context_timestamp=context_timestamp,
+        context_start=context_start,
+        context_end=context_end,
+    )
+    if not anchor_iso:
+        return None
+    try:
+        anchor = datetime.fromisoformat(anchor_iso.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    tz = local_tz or _LOCAL_TZ
+    anchor_local = anchor.astimezone(tz)
+    if has_later:
+        resolved_local = anchor_local + timedelta(hours=2)
+    else:
+        resolved_local = anchor_local - timedelta(hours=2)
     return resolved_local.astimezone(timezone.utc).isoformat()
 
 
@@ -386,6 +439,22 @@ def _parse_time(text: str, *, local_tz=None) -> tuple[str | None, str | None, st
         ts = now.replace(hour=18, minute=30, second=0, microsecond=0)
         return ts.astimezone(timezone.utc).isoformat(), None, None
 
+    if _NOW_RE.search(lower):
+        ts = now.replace(second=0, microsecond=0)
+        return ts.astimezone(timezone.utc).isoformat(), None, None
+
+    if _EARLIER_TODAY_RE.search(lower):
+        ts = now.replace(hour=9, minute=0, second=0, microsecond=0)
+        if ts > now:
+            ts = (now - timedelta(hours=1)).replace(second=0, microsecond=0)
+        return ts.astimezone(timezone.utc).isoformat(), None, None
+
+    if _LATER_TODAY_RE.search(lower):
+        ts = (now + timedelta(hours=3)).replace(second=0, microsecond=0)
+        if ts.date() != now.date():
+            ts = now.replace(hour=21, minute=0, second=0, microsecond=0)
+        return ts.astimezone(timezone.utc).isoformat(), None, None
+
     return None, None, None
 
 
@@ -431,17 +500,25 @@ def _guess_event_type(text: str) -> str:
     lower = text.lower()
     has_exposure = _EXPOSURE_VERBS.search(lower) is not None
     has_context_exposure = _CONTEXT_EXPOSURE_RE.search(lower) is not None
+    has_place_context_exposure = _AT_PLACE_EXPOSURE_RE.search(lower) is not None
     has_symptom_cue = _SYMPTOM_CUES_RE.search(lower) is not None
     has_common_symptom = _COMMON_SYMPTOM_TERMS_RE.search(lower) is not None
     has_had_object = _HAD_OBJECT_RE.search(lower) is not None
     has_meal_marker = re.search(r"\b(breakfast|lunch|dinner)\b", lower) is not None
 
     # Prefer symptom when symptom signal is explicit and no strong exposure verb exists.
-    if (has_symptom_cue or has_common_symptom) and not has_exposure and not has_context_exposure:
+    if (
+        (has_symptom_cue or has_common_symptom)
+        and not has_exposure
+        and not has_context_exposure
+        and not has_place_context_exposure
+    ):
         return "symptom"
     if has_had_object and not has_common_symptom and not has_symptom_cue:
         return "exposure"
     if has_had_object and has_meal_marker and not has_common_symptom:
+        return "exposure"
+    if has_place_context_exposure and not has_common_symptom and not has_symptom_cue:
         return "exposure"
 
     if _EXPOSURE_VERBS.search(text):
@@ -451,6 +528,8 @@ def _guess_event_type(text: str) -> str:
     ):
         return "exposure"
     if _CONTEXT_EXPOSURE_RE.search(text):
+        return "exposure"
+    if _AT_PLACE_EXPOSURE_RE.search(text):
         return "exposure"
     return "symptom"
 
@@ -463,6 +542,8 @@ def _infer_route(text: str) -> str:
         return "proximity_environment"
     if re.search(r"\b(went\s+to|visited|was\s+at|club|party|bar|concert|festival|crowd)\b", t):
         return "proximity_environment"
+    if _AT_PLACE_EXPOSURE_RE.search(t):
+        return "proximity_environment"
     if re.search(r"\b(smoked|vaped|inhaled|inhale)\b", t):
         return "inhalation"
     if re.search(r"\b(applied|apply|rubbed|cream|lotion|ointment|topical|used on)\b", t):
@@ -471,7 +552,7 @@ def _infer_route(text: str) -> str:
         return "injection"
     if _MEAL_CONTEXT_RE.search(t) and re.search(r"\b(had|have|having)\b", t):
         return "ingestion"
-    if re.search(r"\b(ate|eaten|drank|drink|took|take|swallowed|ingested)\b", t):
+    if re.search(r"\b(ate|eat|eaten|eating|drank|drink|drinking|took|take|taking|used|use|using|swallowed|ingested)\b", t):
         return "ingestion"
     if _HAD_OBJECT_RE.search(t) and _COMMON_SYMPTOM_TERMS_RE.search(t) is None:
         return "ingestion"
@@ -481,15 +562,28 @@ def _infer_route(text: str) -> str:
 def _split_exposure_items(text: str) -> list[str]:
     # Extract likely item phrase after ingestion verb and split list-like food entries.
     lower = text.lower()
-    match = re.search(r"\b(ate|eaten|drank|drink|took|take|swallowed|ingested|had|have|having)\b", lower)
+    match = re.search(
+        r"\b(ate|eat|eaten|eating|drank|drink|drinking|took|take|taking|used|use|using|swallowed|ingested|had|have|having)\b",
+        lower,
+    )
     if not match:
-        # Handle non-ingestion context exposures ("went to the club", "at a party")
-        context_match = re.search(r"\b(?:went\s+to|visited|was\s+at)\s+(.*)$", lower)
-        if context_match:
-            segment = context_match.group(1)
+        place_match = re.search(
+            r"\b(?:i\s+am\s+at|i'm\s+at|im\s+at|at)\s+(?:the\s+)?"
+            r"(work|office|workplace|school|campus|class|gym|home|hospital|clinic|"
+            r"airport|restaurant|cafe|coffee\s+shop|bar|club|party|concert|festival|"
+            r"mall|store|subway|bus|train)\b",
+            lower,
+        )
+        if place_match:
+            segment = place_match.group(1)
         else:
-            # Fallback for noun lists without explicit verbs (e.g., "chicken and rice").
-            segment = lower
+        # Handle non-ingestion context exposures ("went to the club", "at a party")
+            context_match = re.search(r"\b(?:went\s+to|visited|was\s+at)\s+(.*)$", lower)
+            if context_match:
+                segment = context_match.group(1)
+            else:
+                # Fallback for noun lists without explicit verbs (e.g., "chicken and rice").
+                segment = lower
         segment = re.split(
             r"\b(today|yesterday|last night|this morning|this afternoon|this evening|morning|afternoon|evening|night|breakfast|lunch|dinner|this breakfast|this lunch|this dinner|yesterday breakfast|yesterday lunch|yesterday dinner)\b",
             segment,
@@ -553,7 +647,11 @@ def _clean_candidate_text(text: str) -> str:
     value = re.sub(r"\b\d{1,2}(?:st|nd|rd|th)?\b", " ", value)
     value = re.sub(r"\b(i|we|also|then|so|when|and|at|about|this|that|in|for|on|to|of|from|by|went|visit|visited|did|do|done|after|before|during|while|because|since|got|my)\b", " ", value)
     value = re.sub(r"\b(was|were|is|am|been|being)\b", " ", value)
-    value = re.sub(r"\b(ate|eaten|drank|drink|used|apply|applied|took|take|smoked|felt|feel|had|have|having)\b", " ", value)
+    value = re.sub(
+        r"\b(ate|eat|eaten|eating|drank|drink|drinking|used|use|using|apply|applied|took|take|taking|smoked|felt|feel|had|have|having)\b",
+        " ",
+        value,
+    )
     value = re.sub(r"\b(morning|afternoon|evening|night|breakfast|lunch|dinner)\b", " ", value)
     value = re.sub(r"\b(10|[1-9])\s*/\s*10\b", " ", value)
     value = re.sub(r"\b([1-9])\s*/\s*5\b", " ", value)
@@ -609,6 +707,8 @@ def _is_valid_symptom_candidate(candidate: str, source_text: str) -> bool:
     # If the candidate itself looks like an exposure phrase, never create symptom rows from it.
     if _EXPOSURE_VERBS.search(normalized) or _CONTEXT_EXPOSURE_RE.search(normalized):
         return False
+    if _CONTEXT_PLACE_RE.search(normalized):
+        return False
     # Enforce signal for symptom classification: either symptom cues in sentence or known symptom term.
     if _SYMPTOM_CUES_RE.search(source_text):
         return True
@@ -621,8 +721,15 @@ def _looks_like_multi_event(text: str) -> bool:
     if not _EXPOSURE_VERBS.search(text):
         return False
     if _SYMPTOM_CUES_RE.search(text) is None and _COMMON_SYMPTOM_TERMS_RE.search(text) is None:
-        return False
-    time_mentions = len(_TIME_AT_RE.findall(text)) + len(_RELATIVE_RE.findall(text))
+        # exposure-only multi-event blurbs should still split when temporal/context shifts exist
+        explicit_context_mentions = len(
+            re.findall(r"\b(?:went\s+to|visited|was\s+at|i\s+am\s+at|i'm\s+at|im\s+at)\b", text, re.I)
+        )
+        exposure_mentions = len(_EXPOSURE_VERBS.findall(text)) + explicit_context_mentions
+        temporal_mentions = len(_TIME_AT_RE.findall(text)) + len(_RELATIVE_RE.findall(text)) + len(_NOW_RE.findall(text))
+        has_clause_shift = re.search(r"\b(and then|then|after that|afterwards|and now|now)\b", text, re.I) is not None
+        return (exposure_mentions >= 2 and temporal_mentions >= 1) or (exposure_mentions >= 2 and has_clause_shift)
+    time_mentions = len(_TIME_AT_RE.findall(text)) + len(_RELATIVE_RE.findall(text)) + len(_NOW_RE.findall(text))
     return time_mentions >= 2
 
 
@@ -807,6 +914,59 @@ def _override_parsed_timestamp(parsed: ParsedEvent, timestamp: str) -> ParsedEve
     )
 
 
+def _expand_multi_item_exposure(parsed: ParsedEvent, text: str) -> list[ParsedEvent]:
+    if parsed.event_type != "exposure":
+        return [parsed]
+    item_candidates = _split_exposure_items(text)
+    # Extra conjunction expansion inside a single ingestion clause.
+    # Example: "ate chicken and also mango" should yield both items.
+    normalized_clause = " ".join((text or "").strip().lower().split())
+    if re.search(r"\b(ate|eat|eating|drank|drink|drinking|took|take|taking|used|use|using|swallowed|ingested)\b", normalized_clause):
+        tail_match = re.search(
+            r"\b(?:ate|eat|eating|drank|drink|drinking|took|take|taking|used|use|using|swallowed|ingested)\b(.*)$",
+            normalized_clause,
+        )
+        if tail_match:
+            tail = tail_match.group(1)
+            tail = re.sub(r"\b(?:also|just|really|very)\b", " ", tail)
+            tail_parts = re.split(r"\s*(?:,|&|\band\b|\bwith\b)\s*", tail)
+            for part in tail_parts:
+                cleaned = _clean_candidate_text(part)
+                if not cleaned or _is_low_signal_candidate(cleaned):
+                    continue
+                if cleaned not in item_candidates:
+                    item_candidates.append(cleaned)
+    if len(item_candidates) <= 1:
+        return [parsed]
+    out: list[ParsedEvent] = [parsed]
+    seen_item_ids: set[int] = set()
+    if parsed.item_id is not None:
+        seen_item_ids.add(int(parsed.item_id))
+    for candidate in item_candidates:
+        item_id = resolve_item_id(candidate)
+        if item_id is None:
+            continue
+        item_id = int(item_id)
+        if item_id in seen_item_ids:
+            continue
+        seen_item_ids.add(item_id)
+        out.append(
+            ParsedEvent(
+                event_type=parsed.event_type,
+                timestamp=parsed.timestamp,
+                time_range_start=parsed.time_range_start,
+                time_range_end=parsed.time_range_end,
+                time_confidence=parsed.time_confidence,
+                item_id=item_id,
+                route=parsed.route,
+                symptom_id=parsed.symptom_id,
+                severity=parsed.severity,
+                source_text=parsed.source_text,
+            )
+        )
+    return out
+
+
 def _normalize_space(text: str) -> str:
     return " ".join((text or "").strip().lower().split())
 
@@ -829,6 +989,15 @@ def _segment_time_anchor(
     )
     if anaphoric_seg_ts is not None:
         return anaphoric_seg_ts, None, None
+    relative_seg_ts = _resolve_relative_clause_time(
+        segment,
+        context_timestamp=context_timestamp,
+        context_start=context_start,
+        context_end=context_end,
+        local_tz=local_tz,
+    )
+    if relative_seg_ts is not None:
+        return relative_seg_ts, None, None
     return seg_ts, seg_start, seg_end
 
 
@@ -931,11 +1100,13 @@ def parse_text_events(text: str, *, local_tz=None) -> list[ParsedEvent]:
     # deterministic segment anchors so API rows do not lose relative daypart intent.
     if api_events:
         for parsed in _apply_context_to_api_events(text=text, api_events=api_events, local_tz=local_tz):
-            _append_if_new(parsed)
-            if _event_has_time(parsed):
-                last_context_timestamp = parsed.timestamp
-                last_context_start = parsed.time_range_start
-                last_context_end = parsed.time_range_end
+            expanded_rows = _expand_multi_item_exposure(parsed, parsed.source_text or text)
+            for expanded in expanded_rows:
+                _append_if_new(expanded)
+                if _event_has_time(expanded):
+                    last_context_timestamp = expanded.timestamp
+                    last_context_start = expanded.time_range_start
+                    last_context_end = expanded.time_range_end
 
     for segment in segments:
         seg_ts, seg_start, seg_end = _segment_time_anchor(
@@ -954,7 +1125,12 @@ def parse_text_events(text: str, *, local_tz=None) -> list[ParsedEvent]:
             segment_lower,
         ) is not None
         has_multiple_exposure_mentions = (
-            len(re.findall(r"\b(ate|eaten|drank|drink|took|take|smoked|used|apply|applied|had|have|having)\b", segment_lower))
+            len(
+                re.findall(
+                    r"\b(ate|eat|eaten|eating|drank|drink|drinking|took|take|taking|smoked|used|use|using|apply|applied|had|have|having)\b",
+                    segment_lower,
+                )
+            )
             >= 2
         )
         has_mixed_signal = (
@@ -971,7 +1147,8 @@ def parse_text_events(text: str, *, local_tz=None) -> list[ParsedEvent]:
             )
             # For multi-exposure clauses, prefer clause parsing over whole-segment parse to avoid blended artifacts.
             if not has_multi_exposure_clause and not has_multiple_exposure_mentions:
-                _append_if_new(parsed)
+                for expanded in _expand_multi_item_exposure(parsed, segment):
+                    _append_if_new(expanded)
             if not has_mixed_signal and not has_multi_exposure_clause and not has_multiple_exposure_mentions:
                 continue
         # Fallback for mixed blurbs in one sentence: split into clause-like chunks.
@@ -1005,11 +1182,13 @@ def parse_text_events(text: str, *, local_tz=None) -> list[ParsedEvent]:
                     context_start=clause_start or seg_start or last_context_start,
                     context_end=clause_end or seg_end or last_context_end,
                 )
-                _append_if_new(clause_parsed)
-                if _has_time_info(clause_parsed):
-                    last_context_timestamp = clause_parsed.timestamp
-                    last_context_start = clause_parsed.time_range_start
-                    last_context_end = clause_parsed.time_range_end
+                expanded_rows = _expand_multi_item_exposure(clause_parsed, clause)
+                for expanded in expanded_rows:
+                    _append_if_new(expanded)
+                    if _has_time_info(expanded):
+                        last_context_timestamp = expanded.timestamp
+                        last_context_start = expanded.time_range_start
+                        last_context_end = expanded.time_range_end
     return parsed_events
 
 

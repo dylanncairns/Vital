@@ -502,20 +502,24 @@ export default function TimelineScreen() {
                                 style: "destructive",
                                 onPress: async () => {
                                   setBusyKey(item.key);
+                                  const removedEventType = event.event_type;
+                                  const removedEventId = event.id;
+                                  setEvents((prev) =>
+                                    prev.filter((row) => !(row.event_type === removedEventType && row.id === removedEventId))
+                                  );
                                   try {
                                     if (!user) {
                                       Alert.alert("Not authenticated", "Please sign in again.");
                                       return;
                                     }
-                                    await deleteEvent(event.event_type, event.id, user.id);
-                                    setEvents((prev) =>
-                                      prev.filter((row) => !(row.event_type === event.event_type && row.id === event.id))
-                                    );
+                                    await deleteEvent(removedEventType, removedEventId, user.id);
                                     setEditingKey(null);
                                     setEditSeverity("");
                                     setEditRoute("");
                                     setEditTimePickerOpen(false);
                                     setEditRoutePickerOpen(false);
+                                    void load(false);
+                                  } catch {
                                     void load(false);
                                   } finally {
                                     setBusyKey(null);
