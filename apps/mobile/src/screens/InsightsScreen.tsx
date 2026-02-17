@@ -164,9 +164,6 @@ export default function InsightsScreen() {
                                 setPendingInsightId(item.id);
                                 try {
                                   await setInsightVerification(item.id, user.id, nextVerified);
-                                  if (nextVerified) {
-                                    await setInsightRejection(item.id, user.id, false);
-                                  }
                                   setRows((prev) =>
                                     prev.map((row) =>
                                       row.id === item.id
@@ -233,9 +230,6 @@ export default function InsightsScreen() {
                                 setPendingInsightId(item.id);
                                 try {
                                   await setInsightRejection(item.id, user.id, nextRejected);
-                                  if (nextRejected) {
-                                    await setInsightVerification(item.id, user.id, false);
-                                  }
                                   setRows((prev) =>
                                     prev.map((row) =>
                                       row.id === item.id

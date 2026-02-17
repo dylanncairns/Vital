@@ -625,9 +625,6 @@ export default function TimelineScreen() {
                                             return;
                                           }
                                           await setInsightVerification(selectedInsight.id, user.id, nextVerified);
-                                          if (nextVerified) {
-                                            await setInsightRejection(selectedInsight.id, user.id, false);
-                                          }
                                           setSelectedInsights((prev) =>
                                             prev.map((row) =>
                                               row.id === selectedInsight.id
@@ -651,7 +648,10 @@ export default function TimelineScreen() {
                                               },
                                             };
                                           });
-                                          await load();
+                                          void load(false);
+                                        } catch (err: any) {
+                                          Alert.alert("Error", err?.message ?? "Failed to update verification.");
+                                          void load(false);
                                         } finally {
                                           setVerifyingInsightId(null);
                                         }
@@ -708,9 +708,6 @@ export default function TimelineScreen() {
                                             return;
                                           }
                                           await setInsightRejection(selectedInsight.id, user.id, nextRejected);
-                                          if (nextRejected) {
-                                            await setInsightVerification(selectedInsight.id, user.id, false);
-                                          }
                                           setSelectedInsights((prev) =>
                                             prev.map((row) =>
                                               row.id === selectedInsight.id
@@ -734,7 +731,10 @@ export default function TimelineScreen() {
                                               },
                                             };
                                           });
-                                          await load();
+                                          void load(false);
+                                        } catch (err: any) {
+                                          Alert.alert("Error", err?.message ?? "Failed to update rejection.");
+                                          void load(false);
                                         } finally {
                                           setVerifyingInsightId(null);
                                         }
