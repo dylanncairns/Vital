@@ -224,7 +224,7 @@ export async function setInsightVerification(
   userId: number,
   verified: boolean
 ): Promise<{status: string; insight_id: number; user_id: number; item_id: number; symptom_id: number; verified: boolean}> {
-  const res = await fetch(`${BASE_URL}/insights/${insightId}/verify`, {
+  const res = await fetchWithTimeout(`${BASE_URL}/insights/${insightId}/verify`, {
     method: "POST",
     headers: authHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ user_id: userId, verified }),
@@ -241,7 +241,7 @@ export async function setInsightRejection(
   userId: number,
   rejected: boolean
 ): Promise<{status: string; insight_id: number; user_id: number; item_id: number; symptom_id: number; verified: boolean; rejected: boolean}> {
-  const res = await fetch(`${BASE_URL}/insights/${insightId}/reject`, {
+  const res = await fetchWithTimeout(`${BASE_URL}/insights/${insightId}/reject`, {
     method: "POST",
     headers: authHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ user_id: userId, rejected }),

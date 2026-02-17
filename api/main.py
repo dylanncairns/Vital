@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 from contextlib import asynccontextmanager
 from typing import Optional
@@ -77,6 +78,15 @@ app = FastAPI(
     version="0.1.0",
     lifespan=_lifespan,
 )
+logger = logging.getLogger(__name__)
+
+
+def _maybe_enqueue_model_retrain_safe(*, trigger_user_id: int) -> None:
+    try:
+        maybe_enqueue_model_retrain(trigger_user_id=trigger_user_id)
+    except Exception:
+        # Mutations should succeed even if background retrain enqueue fails.
+        logger.exception("Model retrain enqueue failed", extra={"trigger_user_id": int(trigger_user_id)})
 
 def _cors_allow_origins() -> list[str]:
     configured = os.getenv("CORS_ALLOW_ORIGINS", "")
@@ -707,7 +717,7 @@ def create_event(payload: EventIn, authorization: Optional[str] = Header(default
         return _event_response(-1, normalized, status="queued", resolution="db_error")
 
     _enqueue_impacted_recompute_jobs(normalized)
-    maybe_enqueue_model_retrain(trigger_user_id=int(normalized["user_id"]))
+    _maybe_enqueue_model_retrain_safe(trigger_user_id=int(normalized["user_id"]))
     return _event_response(created_id, normalized)
 
 
@@ -849,7 +859,7 @@ def patch_event(
                 trigger="event_patch_symptom",
             )
 
-        maybe_enqueue_model_retrain(trigger_user_id=int(user_id))
+        _maybe_enqueue_model_retrain_safe(trigger_user_id=int(user_id))
         return {"status": "ok", "event_id": int(event_id), "event_type": normalized_type, "jobs_queued": int(jobs_queued)}
     finally:
         conn.close()
@@ -903,7 +913,7 @@ def delete_event(
                 symptom_ids={symptom_id},
                 trigger="event_delete_symptom",
             )
-        maybe_enqueue_model_retrain(trigger_user_id=int(user_id))
+        _maybe_enqueue_model_retrain_safe(trigger_user_id=int(user_id))
         return {"status": "ok", "event_id": int(event_id), "event_type": normalized_type, "jobs_queued": int(jobs_queued)}
     finally:
         conn.close()
@@ -1289,7 +1299,7 @@ def verify_insight(insight_id: int, payload: InsightVerifyIn, authorization: Opt
             insight_id=insight_id,
             verified=payload.verified,
         )
-        maybe_enqueue_model_retrain(trigger_user_id=int(user_id))
+        _maybe_enqueue_model_retrain_safe(trigger_user_id=int(user_id))
         return result
     except ValueError as exc:
         if str(exc) == "insight_not_found":
@@ -1310,7 +1320,7 @@ def reject_insight(insight_id: int, payload: InsightRejectIn, authorization: Opt
             insight_id=insight_id,
             rejected=payload.rejected,
         )
-        maybe_enqueue_model_retrain(trigger_user_id=int(user_id))
+        _maybe_enqueue_model_retrain_safe(trigger_user_id=int(user_id))
         if "verified" not in result:
             result["verified"] = False
         return result

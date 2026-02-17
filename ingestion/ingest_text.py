@@ -107,6 +107,15 @@ _DATE_TOKEN_RE = re.compile(
     r")\b",
     re.I,
 )
+_STRONG_RELATIVE_DATE_RE = re.compile(
+    r"\b("
+    r"today|yesterday|last night|tonight|"
+    r"this morning|this afternoon|this evening|this night|"
+    r"yesterday morning|yesterday afternoon|yesterday evening|yesterday night|"
+    r"yesterday breakfast|yesterday lunch|yesterday dinner"
+    r")\b",
+    re.I,
+)
 
 _LOCAL_TZ = datetime.now().astimezone().tzinfo or timezone.utc
 
@@ -283,6 +292,18 @@ def _parse_days_ago(text: str) -> int | None:
             return days
     return None
 
+
+def _has_strong_date_anchor(text: str) -> bool:
+    if not text:
+        return False
+    if _ABS_MONTH_DATE_RE.search(text):
+        return True
+    if _DAYS_AGO_RE.search(text):
+        return True
+    if _STRONG_RELATIVE_DATE_RE.search(text):
+        return True
+    return False
+
 # identify time from within text blob (safe for voice-to-text where user states timestamp)
 def _parse_time(text: str, *, local_tz=None) -> tuple[str | None, str | None, str | None]:
     # Parse time words as local user-time intent, then convert to UTC for storage.
@@ -367,6 +388,30 @@ def _parse_time(text: str, *, local_tz=None) -> tuple[str | None, str | None, st
             end_ts = end_ts + timedelta(days=1)
         return None, start_ts.astimezone(timezone.utc).isoformat(), end_ts.astimezone(timezone.utc).isoformat()
 
+    # Prioritize explicit clock time so phrases like "at 10 am yesterday" keep
+    # both the clock time and the relative/absolute day anchor.
+    match = _TIME_AT_RE.search(text)
+    if match:
+        hour = int(match.group(1))
+        minute = int(match.group(2) or 0)
+        meridiem = (match.group(3) or "").lower()
+        if meridiem == "pm" and hour < 12:
+            hour += 12
+        if meridiem == "am" and hour == 12:
+            hour = 0
+        # Keep date-anchor behavior consistent with other time branches.
+        # If text contains explicit date context, apply it before setting clock time.
+        base = absolute_date or now
+        if days_ago is not None:
+            base = now - timedelta(days=days_ago)
+        rel = _RELATIVE_RE.search(text)
+        if rel:
+            token = rel.group(1).lower()
+            if token.startswith("yesterday") or token == "last night" or token == "yesterday":
+                base = now - timedelta(days=1)
+        ts = base.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        return ts.astimezone(timezone.utc).isoformat(), None, None
+
     match = _RELATIVE_RE.search(text)
     if match:
         token = match.group(1).lower()
@@ -421,18 +466,6 @@ def _parse_time(text: str, *, local_tz=None) -> tuple[str | None, str | None, st
     if days_ago is not None:
         base = now - timedelta(days=days_ago)
         ts = base.replace(hour=12, minute=0, second=0, microsecond=0)
-        return ts.astimezone(timezone.utc).isoformat(), None, None
-
-    match = _TIME_AT_RE.search(text)
-    if match:
-        hour = int(match.group(1))
-        minute = int(match.group(2) or 0)
-        meridiem = (match.group(3) or "").lower()
-        if meridiem == "pm" and hour < 12:
-            hour += 12
-        if meridiem == "am" and hour == 12:
-            hour = 0
-        ts = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
         return ts.astimezone(timezone.utc).isoformat(), None, None
 
     if re.search(r"\b(got home|home from work|after work)\b", lower):
@@ -980,6 +1013,8 @@ def _segment_time_anchor(
     local_tz=None,
 ) -> tuple[str | None, str | None, str | None]:
     seg_ts, seg_start, seg_end = _parse_time(segment, local_tz=local_tz)
+    if _has_strong_date_anchor(segment) and any([seg_ts, seg_start, seg_end]):
+        return seg_ts, seg_start, seg_end
     anaphoric_seg_ts = _resolve_anaphoric_daypart_time(
         segment,
         context_timestamp=context_timestamp,
@@ -1018,6 +1053,7 @@ def _apply_context_to_api_events(
     last_context_start: str | None = None
     last_context_end: str | None = None
     for segment in segments:
+        segment_has_strong_date_anchor = _has_strong_date_anchor(segment)
         seg_ts, seg_start, seg_end = _segment_time_anchor(
             segment,
             context_timestamp=last_context_timestamp,
@@ -1109,6 +1145,7 @@ def parse_text_events(text: str, *, local_tz=None) -> list[ParsedEvent]:
                     last_context_end = expanded.time_range_end
 
     for segment in segments:
+        segment_has_strong_date_anchor = _has_strong_date_anchor(segment)
         seg_ts, seg_start, seg_end = _segment_time_anchor(
             segment,
             context_timestamp=last_context_timestamp,
@@ -1176,6 +1213,12 @@ def parse_text_events(text: str, *, local_tz=None) -> list[ParsedEvent]:
             if clause_parsed is not None:
                 if anaphoric_clause_ts is not None:
                     clause_parsed = _override_parsed_timestamp(clause_parsed, anaphoric_clause_ts)
+                elif segment_has_strong_date_anchor and not _has_strong_date_anchor(clause):
+                    # Preserve explicit segment-level date anchor (e.g., "On February 10 ...")
+                    # for weak daypart-only clauses split from the same sentence.
+                    clause_ts, clause_start, clause_end = seg_ts, seg_start, seg_end
+                    if seg_ts is not None:
+                        clause_parsed = _override_parsed_timestamp(clause_parsed, seg_ts)
                 clause_parsed = _apply_time_context(
                     clause_parsed,
                     context_timestamp=clause_ts or seg_ts or last_context_timestamp,
