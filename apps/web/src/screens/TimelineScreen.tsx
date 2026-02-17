@@ -40,14 +40,19 @@ export default function TimelineScreen() {
     const [verifyingInsightId, setVerifyingInsightId] = useState<number | null>(null);
     const loadSeqRef = useRef(0);
 
-    async function confirmAction(title: string, message: string): Promise<boolean> {
+    async function confirmAction(
+      title: string,
+      message: string,
+      confirmLabel: string = "Confirm",
+      confirmStyle: "default" | "destructive" = "default"
+    ): Promise<boolean> {
       if (typeof window !== "undefined" && typeof window.confirm === "function") {
         return window.confirm(`${title}\n\n${message}`);
       }
       return new Promise((resolve) => {
         Alert.alert(title, message, [
           { text: "Cancel", style: "cancel", onPress: () => resolve(false) },
-          { text: "Delete", style: "destructive", onPress: () => resolve(true) },
+          { text: confirmLabel, style: confirmStyle, onPress: () => resolve(true) },
         ]);
       });
     }
@@ -605,60 +610,54 @@ export default function TimelineScreen() {
                                 paddingVertical: 4,
                                 opacity: verifyingInsightId === selectedInsight.id ? 0.6 : 1,
                               }}
-                              onPress={() => {
+                              onPress={async () => {
                                 const nextVerified = !isVerified;
-                                Alert.alert(
+                                const confirmed = await confirmAction(
                                   nextVerified ? "Verify insight?" : "Remove verification?",
                                   nextVerified
                                     ? "Confirm that this insight feels accurate for your experience?"
                                     : "Are you sure you want to remove your verification for this insight?",
-                                  [
-                                    { text: "Cancel", style: "cancel" },
-                                    {
-                                      text: nextVerified ? "Verify" : "Remove",
-                                      style: nextVerified ? "default" : "destructive",
-                                      onPress: async () => {
-                                        setVerifyingInsightId(selectedInsight.id);
-                                        try {
-                                          if (!user) {
-                                            Alert.alert("Not authenticated", "Please sign in again.");
-                                            return;
-                                          }
-                                          await setInsightVerification(selectedInsight.id, user.id, nextVerified);
-                                          setSelectedInsights((prev) =>
-                                            prev.map((row) =>
-                                              row.id === selectedInsight.id
-                                                ? {
-                                                    ...row,
-                                                    user_verified: nextVerified,
-                                                    user_rejected: nextVerified ? false : row.user_rejected,
-                                                  }
-                                                : row
-                                            )
-                                          );
-                                          setInsightsById((prev) => {
-                                            const current = prev[selectedInsight.id];
-                                            if (!current) return prev;
-                                            return {
-                                              ...prev,
-                                              [selectedInsight.id]: {
-                                                ...current,
-                                                user_verified: nextVerified,
-                                                user_rejected: nextVerified ? false : current.user_rejected,
-                                              },
-                                            };
-                                          });
-                                          void load(false);
-                                        } catch (err: any) {
-                                          Alert.alert("Error", err?.message ?? "Failed to update verification.");
-                                          void load(false);
-                                        } finally {
-                                          setVerifyingInsightId(null);
-                                        }
-                                      },
-                                    },
-                                  ]
+                                  nextVerified ? "Verify" : "Remove",
+                                  nextVerified ? "default" : "destructive"
                                 );
+                                if (!confirmed) return;
+                                setVerifyingInsightId(selectedInsight.id);
+                                try {
+                                  if (!user) {
+                                    Alert.alert("Not authenticated", "Please sign in again.");
+                                    return;
+                                  }
+                                  await setInsightVerification(selectedInsight.id, user.id, nextVerified);
+                                  setSelectedInsights((prev) =>
+                                    prev.map((row) =>
+                                      row.id === selectedInsight.id
+                                        ? {
+                                            ...row,
+                                            user_verified: nextVerified,
+                                            user_rejected: nextVerified ? false : row.user_rejected,
+                                          }
+                                        : row
+                                    )
+                                  );
+                                  setInsightsById((prev) => {
+                                    const current = prev[selectedInsight.id];
+                                    if (!current) return prev;
+                                    return {
+                                      ...prev,
+                                      [selectedInsight.id]: {
+                                        ...current,
+                                        user_verified: nextVerified,
+                                        user_rejected: nextVerified ? false : current.user_rejected,
+                                      },
+                                    };
+                                  });
+                                  void load(false);
+                                } catch (err: any) {
+                                  Alert.alert("Error", err?.message ?? "Failed to update verification.");
+                                  void load(false);
+                                } finally {
+                                  setVerifyingInsightId(null);
+                                }
                               }}
                             >
                               <Text
@@ -688,60 +687,54 @@ export default function TimelineScreen() {
                                 paddingVertical: 4,
                                 opacity: verifyingInsightId === selectedInsight.id ? 0.6 : 1,
                               }}
-                              onPress={() => {
+                              onPress={async () => {
                                 const nextRejected = !isRejected;
-                                Alert.alert(
+                                const confirmed = await confirmAction(
                                   nextRejected ? "Reject insight?" : "Remove rejection?",
                                   nextRejected
                                     ? "Confirm that this insight does not match your experience?"
                                     : "Are you sure you want to remove your rejection for this insight?",
-                                  [
-                                    { text: "Cancel", style: "cancel" },
-                                    {
-                                      text: nextRejected ? "Reject" : "Remove",
-                                      style: "destructive",
-                                      onPress: async () => {
-                                        setVerifyingInsightId(selectedInsight.id);
-                                        try {
-                                          if (!user) {
-                                            Alert.alert("Not authenticated", "Please sign in again.");
-                                            return;
-                                          }
-                                          await setInsightRejection(selectedInsight.id, user.id, nextRejected);
-                                          setSelectedInsights((prev) =>
-                                            prev.map((row) =>
-                                              row.id === selectedInsight.id
-                                                ? {
-                                                    ...row,
-                                                    user_rejected: nextRejected,
-                                                    user_verified: nextRejected ? false : row.user_verified,
-                                                  }
-                                                : row
-                                            )
-                                          );
-                                          setInsightsById((prev) => {
-                                            const current = prev[selectedInsight.id];
-                                            if (!current) return prev;
-                                            return {
-                                              ...prev,
-                                              [selectedInsight.id]: {
-                                                ...current,
-                                                user_rejected: nextRejected,
-                                                user_verified: nextRejected ? false : current.user_verified,
-                                              },
-                                            };
-                                          });
-                                          void load(false);
-                                        } catch (err: any) {
-                                          Alert.alert("Error", err?.message ?? "Failed to update rejection.");
-                                          void load(false);
-                                        } finally {
-                                          setVerifyingInsightId(null);
-                                        }
-                                      },
-                                    },
-                                  ]
+                                  nextRejected ? "Reject" : "Remove",
+                                  "destructive"
                                 );
+                                if (!confirmed) return;
+                                setVerifyingInsightId(selectedInsight.id);
+                                try {
+                                  if (!user) {
+                                    Alert.alert("Not authenticated", "Please sign in again.");
+                                    return;
+                                  }
+                                  await setInsightRejection(selectedInsight.id, user.id, nextRejected);
+                                  setSelectedInsights((prev) =>
+                                    prev.map((row) =>
+                                      row.id === selectedInsight.id
+                                        ? {
+                                            ...row,
+                                            user_rejected: nextRejected,
+                                            user_verified: nextRejected ? false : row.user_verified,
+                                          }
+                                        : row
+                                    )
+                                  );
+                                  setInsightsById((prev) => {
+                                    const current = prev[selectedInsight.id];
+                                    if (!current) return prev;
+                                    return {
+                                      ...prev,
+                                      [selectedInsight.id]: {
+                                        ...current,
+                                        user_rejected: nextRejected,
+                                        user_verified: nextRejected ? false : current.user_verified,
+                                      },
+                                    };
+                                  });
+                                  void load(false);
+                                } catch (err: any) {
+                                  Alert.alert("Error", err?.message ?? "Failed to update rejection.");
+                                  void load(false);
+                                } finally {
+                                  setVerifyingInsightId(null);
+                                }
                               }}
                             >
                               <Text

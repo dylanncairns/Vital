@@ -75,6 +75,23 @@ export default function InsightsScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [pendingInsightId, setPendingInsightId] = useState<number | null>(null);
 
+  async function confirmAction(
+    title: string,
+    message: string,
+    confirmLabel: string = "Confirm",
+    confirmStyle: "default" | "destructive" = "default"
+  ): Promise<boolean> {
+    if (typeof window !== "undefined" && typeof window.confirm === "function") {
+      return window.confirm(`${title}\n\n${message}`);
+    }
+    return new Promise((resolve) => {
+      Alert.alert(title, message, [
+        { text: "Cancel", style: "cancel", onPress: () => resolve(false) },
+        { text: confirmLabel, style: confirmStyle, onPress: () => resolve(true) },
+      ]);
+    });
+  }
+
   const load = React.useCallback(async () => {
     setRefreshing(true);
     try {
@@ -147,43 +164,37 @@ export default function InsightsScreen() {
                         paddingVertical: 4,
                         opacity: pendingInsightId === item.id ? 0.6 : 1,
                       }}
-                      onPress={() => {
+                      onPress={async () => {
                         const nextVerified = !isVerified;
-                        Alert.alert(
+                        const confirmed = await confirmAction(
                           nextVerified ? "Verify insight?" : "Remove verification?",
                           nextVerified
                             ? "Confirm that this insight feels accurate for your experience?"
                             : "Are you sure you want to remove your verification for this insight?",
-                          [
-                            { text: "Cancel", style: "cancel" },
-                            {
-                              text: nextVerified ? "Verify" : "Remove",
-                              style: nextVerified ? "default" : "destructive",
-                              onPress: async () => {
-                                if (!user) return;
-                                setPendingInsightId(item.id);
-                                try {
-                                  await setInsightVerification(item.id, user.id, nextVerified);
-                                  setRows((prev) =>
-                                    prev.map((row) =>
-                                      row.id === item.id
-                                        ? {
-                                            ...row,
-                                            user_verified: nextVerified,
-                                            user_rejected: nextVerified ? false : row.user_rejected,
-                                          }
-                                        : row
-                                    )
-                                  );
-                                } catch (err: any) {
-                                  Alert.alert("Error", err?.message ?? "Failed to update verification.");
-                                } finally {
-                                  setPendingInsightId(null);
-                                }
-                              },
-                            },
-                          ]
+                          nextVerified ? "Verify" : "Remove",
+                          nextVerified ? "default" : "destructive"
                         );
+                        if (!confirmed) return;
+                        if (!user) return;
+                        setPendingInsightId(item.id);
+                        try {
+                          await setInsightVerification(item.id, user.id, nextVerified);
+                          setRows((prev) =>
+                            prev.map((row) =>
+                              row.id === item.id
+                                ? {
+                                    ...row,
+                                    user_verified: nextVerified,
+                                    user_rejected: nextVerified ? false : row.user_rejected,
+                                  }
+                                : row
+                            )
+                          );
+                        } catch (err: any) {
+                          Alert.alert("Error", err?.message ?? "Failed to update verification.");
+                        } finally {
+                          setPendingInsightId(null);
+                        }
                       }}
                     >
                       <Text
@@ -213,43 +224,37 @@ export default function InsightsScreen() {
                         paddingVertical: 4,
                         opacity: pendingInsightId === item.id ? 0.6 : 1,
                       }}
-                      onPress={() => {
+                      onPress={async () => {
                         const nextRejected = !isRejected;
-                        Alert.alert(
+                        const confirmed = await confirmAction(
                           nextRejected ? "Reject insight?" : "Remove rejection?",
                           nextRejected
                             ? "Mark that this insight does not fit your experience?"
                             : "Are you sure you want to remove your rejection for this insight?",
-                          [
-                            { text: "Cancel", style: "cancel" },
-                            {
-                              text: nextRejected ? "Reject" : "Remove",
-                              style: "destructive",
-                              onPress: async () => {
-                                if (!user) return;
-                                setPendingInsightId(item.id);
-                                try {
-                                  await setInsightRejection(item.id, user.id, nextRejected);
-                                  setRows((prev) =>
-                                    prev.map((row) =>
-                                      row.id === item.id
-                                        ? {
-                                            ...row,
-                                            user_rejected: nextRejected,
-                                            user_verified: nextRejected ? false : row.user_verified,
-                                          }
-                                        : row
-                                    )
-                                  );
-                                } catch (err: any) {
-                                  Alert.alert("Error", err?.message ?? "Failed to update rejection.");
-                                } finally {
-                                  setPendingInsightId(null);
-                                }
-                              },
-                            },
-                          ]
+                          nextRejected ? "Reject" : "Remove",
+                          "destructive"
                         );
+                        if (!confirmed) return;
+                        if (!user) return;
+                        setPendingInsightId(item.id);
+                        try {
+                          await setInsightRejection(item.id, user.id, nextRejected);
+                          setRows((prev) =>
+                            prev.map((row) =>
+                              row.id === item.id
+                                ? {
+                                    ...row,
+                                    user_rejected: nextRejected,
+                                    user_verified: nextRejected ? false : row.user_verified,
+                                  }
+                                : row
+                            )
+                          );
+                        } catch (err: any) {
+                          Alert.alert("Error", err?.message ?? "Failed to update rejection.");
+                        } finally {
+                          setPendingInsightId(null);
+                        }
                       }}
                     >
                       <Text
