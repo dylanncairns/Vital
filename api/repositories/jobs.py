@@ -48,8 +48,11 @@ def enqueue_background_job(
     item_id: int | None,
     symptom_id: int | None,
     payload: dict[str, Any] | None = None,
+    conn=None,
 ) -> int | None:
-    conn = get_connection()
+    owns_connection = conn is None
+    if conn is None:
+        conn = get_connection()
     try:
         existing = conn.execute(
             """
@@ -86,10 +89,12 @@ def enqueue_background_job(
                 now_iso,
             ),
         )
-        conn.commit()
+        if owns_connection:
+            conn.commit()
         return int(cursor.fetchone()["id"])
     finally:
-        conn.close()
+        if owns_connection:
+            conn.close()
 
 
 def list_pending_jobs(*, limit: int = 20) -> list[dict[str, Any]]:

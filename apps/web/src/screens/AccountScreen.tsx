@@ -16,6 +16,18 @@ export default function AccountScreen() {
 
   const username = useMemo(() => user?.username ?? "", [user]);
 
+  async function confirmAction(title: string, message: string): Promise<boolean> {
+    if (typeof window !== "undefined" && typeof window.confirm === "function") {
+      return window.confirm(`${title}\n\n${message}`);
+    }
+    return new Promise((resolve) => {
+      Alert.alert(title, message, [
+        { text: "Cancel", style: "cancel", onPress: () => resolve(false) },
+        { text: "Delete", style: "destructive", onPress: () => resolve(true) },
+      ]);
+    });
+  }
+
   async function saveName() {
     setBusy(true);
     setError(null);
@@ -31,31 +43,23 @@ export default function AccountScreen() {
     }
   }
 
-  function onDeleteAccountPress() {
+  async function onDeleteAccountPress() {
     if (busy) return;
-    Alert.alert(
+    const confirmed = await confirmAction(
       "Delete account?",
-      "This will permanently remove your account and timeline data.",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Delete",
-          style: "destructive",
-          onPress: async () => {
-            setBusy(true);
-            setError(null);
-            setStatus(null);
-            try {
-              await deleteAccount();
-            } catch (err: any) {
-              setError(err?.message ?? "Failed to delete account.");
-            } finally {
-              setBusy(false);
-            }
-          },
-        },
-      ]
+      "This will permanently remove your account and timeline data."
     );
+    if (!confirmed) return;
+    setBusy(true);
+    setError(null);
+    setStatus(null);
+    try {
+      await deleteAccount();
+    } catch {
+      // Keep delete failures silent in UI per product preference.
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (

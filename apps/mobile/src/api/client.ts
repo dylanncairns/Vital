@@ -17,6 +17,7 @@ import {
 const envBaseUrl = process.env.EXPO_PUBLIC_API_BASE_URL || "http://127.0.0.1:8000";
 const BASE_URL = envBaseUrl.replace(/\/+$/, "");
 let AUTH_TOKEN: string | null = null;
+const REQUEST_TIMEOUT_MS = 15000;
 
 export type AuthUser = { id: number; username: string; name?: string | null };
 export type AuthResponse = { token: string; user: AuthUser };
@@ -31,6 +32,21 @@ function authHeaders(extra: Record<string, string> = {}): Record<string, string>
     headers.Authorization = `Bearer ${AUTH_TOKEN}`;
   }
   return headers;
+}
+
+async function fetchWithTimeout(url: string, init: RequestInit = {}, timeoutMs = REQUEST_TIMEOUT_MS): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } catch (err: any) {
+    if (err?.name === "AbortError") {
+      throw new Error(`Request timed out after ${Math.round(timeoutMs / 1000)}s`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function parseApiErrorDetail(text: string): string {
@@ -123,7 +139,7 @@ export async function updateMe(payload: { name: string }): Promise<AuthUser> {
 }
 
 export async function deleteMe(): Promise<void> {
-  const res = await fetch(`${BASE_URL}/auth/me`, {
+  const res = await fetchWithTimeout(`${BASE_URL}/auth/me`, {
     method: "DELETE",
     headers: authHeaders(),
   });
@@ -260,7 +276,7 @@ export async function deleteEvent(
   eventId: number,
   userId: number
 ): Promise<EventMutationResponse> {
-  const res = await fetch(`${BASE_URL}/events/${eventType}/${eventId}?user_id=${userId}`, {
+  const res = await fetchWithTimeout(`${BASE_URL}/events/${eventType}/${eventId}?user_id=${userId}`, {
     method: "DELETE",
     headers: authHeaders(),
   });

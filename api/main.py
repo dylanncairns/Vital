@@ -513,6 +513,7 @@ def _enqueue_impacted_recompute_jobs(normalized: NormalizedEvent) -> int:
                     item_id=item_id,
                     symptom_id=symptom_id,
                     payload={"trigger": "event_exposure"},
+                    conn=conn,
                 )
                 if job_id is not None:
                     jobs_added += 1
@@ -532,9 +533,12 @@ def _enqueue_impacted_recompute_jobs(normalized: NormalizedEvent) -> int:
                     item_id=item_id,
                     symptom_id=symptom_id,
                     payload={"trigger": "event_symptom"},
+                    conn=conn,
                 )
                 if job_id is not None:
                     jobs_added += 1
+        if jobs_added > 0:
+            conn.commit()
         return jobs_added
     finally:
         conn.close()
@@ -559,9 +563,12 @@ def _enqueue_recompute_jobs_for_items(*, user_id: int, item_ids: set[int], trigg
                     item_id=int(item_id),
                     symptom_id=int(symptom_id),
                     payload={"trigger": trigger},
+                    conn=conn,
                 )
                 if job_id is not None:
                     jobs_added += 1
+        if jobs_added > 0:
+            conn.commit()
         return jobs_added
     finally:
         conn.close()
@@ -586,9 +593,12 @@ def _enqueue_recompute_jobs_for_symptoms(*, user_id: int, symptom_ids: set[int],
                     item_id=int(item_id),
                     symptom_id=int(symptom_id),
                     payload={"trigger": trigger},
+                    conn=conn,
                 )
                 if job_id is not None:
                     jobs_added += 1
+        if jobs_added > 0:
+            conn.commit()
         return jobs_added
     finally:
         conn.close()

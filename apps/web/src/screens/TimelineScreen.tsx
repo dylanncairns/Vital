@@ -40,6 +40,18 @@ export default function TimelineScreen() {
     const [verifyingInsightId, setVerifyingInsightId] = useState<number | null>(null);
     const loadSeqRef = useRef(0);
 
+    async function confirmAction(title: string, message: string): Promise<boolean> {
+      if (typeof window !== "undefined" && typeof window.confirm === "function") {
+        return window.confirm(`${title}\n\n${message}`);
+      }
+      return new Promise((resolve) => {
+        Alert.alert(title, message, [
+          { text: "Cancel", style: "cancel", onPress: () => resolve(false) },
+          { text: "Delete", style: "destructive", onPress: () => resolve(true) },
+        ]);
+      });
+    }
+
     function eventInsightKey(eventType: "exposure" | "symptom", eventId: number): string {
       return `${eventType}:${eventId}`;
     }
@@ -491,43 +503,35 @@ export default function TimelineScreen() {
                       <TouchableOpacity
                         style={{ backgroundColor: "#FFEDEE", borderRadius: 8, paddingHorizontal: 12, paddingVertical: 8 }}
                         disabled={busyKey === item.key}
-                        onPress={() => {
-                          Alert.alert(
+                        onPress={async () => {
+                          const confirmed = await confirmAction(
                             "Delete event",
-                            "This will remove the event and trigger downstream recompute.",
-                            [
-                              { text: "Cancel", style: "cancel" },
-                              {
-                                text: "Delete",
-                                style: "destructive",
-                                onPress: async () => {
-                                  setBusyKey(item.key);
-                                  const removedEventType = event.event_type;
-                                  const removedEventId = event.id;
-                                  setEvents((prev) =>
-                                    prev.filter((row) => !(row.event_type === removedEventType && row.id === removedEventId))
-                                  );
-                                  try {
-                                    if (!user) {
-                                      Alert.alert("Not authenticated", "Please sign in again.");
-                                      return;
-                                    }
-                                    await deleteEvent(removedEventType, removedEventId, user.id);
-                                    setEditingKey(null);
-                                    setEditSeverity("");
-                                    setEditRoute("");
-                                    setEditTimePickerOpen(false);
-                                    setEditRoutePickerOpen(false);
-                                    void load(false);
-                                  } catch {
-                                    void load(false);
-                                  } finally {
-                                    setBusyKey(null);
-                                  }
-                                },
-                              },
-                            ]
+                            "This will remove the event and trigger downstream recompute."
                           );
+                          if (!confirmed) return;
+                          setBusyKey(item.key);
+                          const removedEventType = event.event_type;
+                          const removedEventId = event.id;
+                          setEvents((prev) =>
+                            prev.filter((row) => !(row.event_type === removedEventType && row.id === removedEventId))
+                          );
+                          try {
+                            if (!user) {
+                              Alert.alert("Not authenticated", "Please sign in again.");
+                              return;
+                            }
+                            await deleteEvent(removedEventType, removedEventId, user.id);
+                            setEditingKey(null);
+                            setEditSeverity("");
+                            setEditRoute("");
+                            setEditTimePickerOpen(false);
+                            setEditRoutePickerOpen(false);
+                            void load(false);
+                          } catch {
+                            void load(false);
+                          } finally {
+                            setBusyKey(null);
+                          }
                         }}
                       >
                         <Text style={{ color: "#B42318", fontFamily: "Exo2-SemiBold" }}>Delete</Text>
