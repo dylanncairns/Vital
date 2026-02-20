@@ -324,3 +324,7 @@
     - one worker for model retraining
 - moved non-route event logic from main.py to event_helpers
 - moved pydantic request/response json payload models from main.py to schemas.py
+
+## Commit 41
+- switched ci.yml tests to run pytest on setup-python + pip install environment rather than pytest executable found on PATH
+- added corresponding packages to requirements
