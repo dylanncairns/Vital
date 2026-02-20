@@ -325,7 +325,9 @@
 - moved non-route event logic from main.py to event_helpers
 - moved pydantic request/response json payload models from main.py to schemas.py
 
-## Commits 41-42
+## Commits 41-43
 - switched ci.yml tests to run pytest on setup-python + pip install environment rather than pytest executable found on PATH
 - added corresponding packages to requirements
 - fixed some SQL issues that were causing ci.yml int tests to fail
+- fix auth issue for test vs non test in main.py
+- patch guard which previously accepted an invalid auth header
