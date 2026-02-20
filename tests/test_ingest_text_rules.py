@@ -57,6 +57,38 @@ class IngestTextRulesTest(unittest.TestCase):
         normalized = ingest_text_mod._normalize_symptom_candidate("also some new acne spots")
         self.assertEqual(normalized, "acne")
 
+    def test_normalize_symptom_candidate_memory_phrase_maps_to_brain_fog(self) -> None:
+        normalized = ingest_text_mod._normalize_symptom_candidate("unable to remember anything recently")
+        self.assertEqual(normalized, "brain fog")
+
+    def test_normalize_symptom_candidate_sleep_phrase_maps_to_insomnia(self) -> None:
+        normalized = ingest_text_mod._normalize_symptom_candidate("I can't sleep lately")
+        self.assertEqual(normalized, "insomnia")
+
+    def test_normalize_symptom_candidate_dizzy_phrase_maps_to_dizziness(self) -> None:
+        normalized = ingest_text_mod._normalize_symptom_candidate("felt light-headed all day")
+        self.assertEqual(normalized, "dizziness")
+
+    def test_normalize_symptom_candidate_conversational_tense_maps_memory_to_brain_fog(self) -> None:
+        normalized = ingest_text_mod._normalize_symptom_candidate(
+            "I have been unable to remember anything recently"
+        )
+        self.assertEqual(normalized, "brain fog")
+
+    def test_normalize_symptom_candidate_conversational_tense_maps_sleep_to_insomnia(self) -> None:
+        normalized = ingest_text_mod._normalize_symptom_candidate(
+            "I've been having trouble sleeping lately"
+        )
+        self.assertEqual(normalized, "insomnia")
+
+    def test_parse_with_rules_handles_conversational_memory_phrase(self) -> None:
+        ingest_text_mod.resolve_symptom_id = lambda name: 333 if name == "brain fog" else None
+        parsed = ingest_text_mod.parse_with_rules("I have been unable to remember anything recently")
+        self.assertIsNotNone(parsed)
+        assert parsed is not None
+        self.assertEqual(parsed.event_type, "symptom")
+        self.assertEqual(parsed.symptom_id, 333)
+
     def test_split_exposure_items_handles_repeated_had_clause(self) -> None:
         items = ingest_text_mod._split_exposure_items(
             "For dinner tonight, I had a steak and I had sweet potatoes."

@@ -282,10 +282,16 @@
 - add delete account functionality e2e
 - note: need to add max-attempt ceiling for evidence jobs (mark as failed permanently after x tries) so i dont get heinously charged by OpenAI
 
-## Commits 33-37
+## Commits 33-38
 - fixed screen refresh causing logout
 - fixed delete and edit functionalities on timeline entries
 - added functionality to show user ingestion is occuring so long ingestion processes after clicking log dont just look like frozen screen
 - patched ingestion pipeline handling of temporal clauses like "right now" and "later today" which were previously included in exposure item name
 - patched ingestion pipeline handling of phrases like "ate x and y" where previously it would only log x
 - fixed reject/verify insight button and ensured it triggered alterations in computed features for the item/symptom involved
+
+# Commit 39
+- reinforces ingestion pipeline handling of conversational symptom reporting ie:
+    - "couldn't sleep last night"
+    - "having trouble remembering things recently"
+    - "stomach was messed up last night"

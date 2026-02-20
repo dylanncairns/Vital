@@ -85,7 +85,20 @@ _DAYS_AGO_RE = re.compile(
     r"\b(?:(\d+)|one|two|three|four|five|six|seven)\s+days?\s+ago\b",
     re.I,
 )
-_SYMPTOM_CUES_RE = re.compile(r"\b(felt|feel|tired|ache|pain|nausea|headache|stomachache)\b", re.I)
+_SYMPTOM_CUES_RE = re.compile(
+    r"\b("
+    r"felt|feel|feeling|tired|fatigued|exhausted|"
+    r"ache|pain|nausea|headache|stomachache|"
+    r"dizzy|dizziness|lightheaded|vertigo|"
+    r"anxious|anxiety|panic|"
+    r"insomnia|can't sleep|cannot sleep|trouble sleeping|"
+    r"brain fog|memory|remember|forget|forgetful|concentrate|focus|"
+    r"bloating|bloated|constipation|diarrhea|"
+    r"rash|itch|itchy|hives|acne|breakout|"
+    r"cough|fever|sore throat"
+    r")\b",
+    re.I,
+)
 _HAD_OBJECT_RE = re.compile(r"\bhad\s+(?:a|an|some|the)?\s*[a-z]", re.I)
 _MEAL_CONTEXT_RE = re.compile(r"\b(breakfast|lunch|dinner|ate|eaten|drank|drink)\b", re.I)
 _LIFESTYLE_EXPOSURE_RE = re.compile(
@@ -169,6 +182,37 @@ _COMMON_SYMPTOM_TERMS_RE = re.compile(
     r")\b",
     re.I,
 )
+
+# Common lay phrasing -> canonical symptom labels used for DB resolution.
+_SYMPTOM_SYNONYM_RULES: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"\b(can'?t|cannot|unable to|unable)\s+(remember|focus|concentrate)\b", re.I), "brain fog"),
+    (re.compile(r"\b(can'?t|cannot|unable to)\s+think\s+clearly\b", re.I), "brain fog"),
+    (re.compile(r"\b(mental fog|foggy brain|mind feels foggy)\b", re.I), "brain fog"),
+    (re.compile(r"\bmemory (issues?|problems?|loss)\b", re.I), "brain fog"),
+    (re.compile(r"\bforgetful(?:ness)?\b", re.I), "brain fog"),
+    (re.compile(r"\b(light[- ]?headed|lightheadedness)\b", re.I), "dizziness"),
+    (re.compile(r"\b(dizzy|dizziness|vertigo|spinning)\b", re.I), "dizziness"),
+    (re.compile(r"\b(exhausted|worn out|low energy|no energy|drained)\b", re.I), "fatigue"),
+    (re.compile(r"\b(tired(?:ness)?|fatigued)\b", re.I), "fatigue"),
+    (re.compile(r"\b(can'?t sleep|cannot sleep|unable to sleep|trouble sleeping|difficulty sleeping|poor sleep|sleep is bad)\b", re.I), "insomnia"),
+    (re.compile(r"\b(waking up a lot|keep waking up|wake up constantly)\b", re.I), "insomnia"),
+    (re.compile(r"\b(anxious|panic(?: attack)?s?)\b", re.I), "anxiety"),
+    (re.compile(r"\b(feeling on edge|racing thoughts|restless anxiety)\b", re.I), "anxiety"),
+    (re.compile(r"\b(feeling depressed|depressed mood|hopeless|low mood)\b", re.I), "anxiety"),
+    (re.compile(r"\b(throwing up|threw up|vomit(?:ing)?)\b", re.I), "vomiting"),
+    (re.compile(r"\b(feel|feeling)\s+sick\b", re.I), "nausea"),
+    (re.compile(r"\b(queasy|queasiness)\b", re.I), "nausea"),
+    (re.compile(r"\b(stomach pain|abdominal pain|stomach ache)\b", re.I), "stomachache"),
+    (re.compile(r"\b(head pain|head ache)\b", re.I), "headache"),
+    (re.compile(r"\b(acne spots?|breakouts?|pimples?|zits?)\b", re.I), "acne"),
+    (re.compile(r"\b(bloated|bloating|gassy|gas)\b", re.I), "bloating"),
+    (re.compile(r"\b(can'?t poop|hard to poop|haven'?t pooped)\b", re.I), "constipation"),
+    (re.compile(r"\b(loose stools?|runny stools?)\b", re.I), "diarrhea"),
+    (re.compile(r"\b(itchy|itching)\b", re.I), "itch"),
+    (re.compile(r"\b(hives?|welts?)\b", re.I), "hives"),
+    (re.compile(r"\b(sore throat|throat pain)\b", re.I), "sore throat"),
+    (re.compile(r"\b(high bp|elevated blood pressure|hypertension)\b", re.I), "high blood pressure"),
+]
 
 _ABS_MONTH_DATE_RE = re.compile(
     r"\b(?:on\s+)?("
@@ -713,8 +757,29 @@ def _normalize_symptom_candidate(candidate: str) -> str:
     value = " ".join(candidate.strip().lower().split())
     if not value:
         return value
+    value = value.replace("’", "'")
+    value = re.sub(r"\bcan't\b", "cannot", value)
+    value = re.sub(r"\bwon't\b", "will not", value)
+    value = re.sub(r"\bdoesn't\b", "does not", value)
+    value = re.sub(r"\bdon't\b", "do not", value)
+    # Strip conversational lead-ins and tense wrappers.
+    value = re.sub(
+        r"^(?:i|we|my|our)\s+(?:have|has|had|am|are|is|was|were|been|be|feel|feeling|felt)\s+",
+        "",
+        value,
+    )
+    value = re.sub(
+        r"^(?:been|having|dealing with|struggling with|suffering from|experiencing)\s+",
+        "",
+        value,
+    )
+    value = re.sub(r"\b(?:recently|lately|for a while|for weeks?|for months?)\b", " ", value)
+    value = re.sub(r"\s+", " ", value).strip()
     value = re.sub(r"^(also|just|really|very)\s+", "", value)
     value = re.sub(r"^(some|new|a|an|the)\s+", "", value)
+    for pattern, canonical in _SYMPTOM_SYNONYM_RULES:
+        if pattern.search(value):
+            return canonical
     term_match = _COMMON_SYMPTOM_TERMS_RE.search(value)
     if term_match:
         return term_match.group(0).strip().lower()
