@@ -271,6 +271,7 @@ class IngestTextRulesTest(unittest.TestCase):
         self.assertEqual(parsed.astimezone(pacific).hour, 9)
 
     def test_api_events_without_time_inherit_segment_anchor_time(self) -> None:
+        ingest_text_mod.resolve_item_id = lambda _name: None
         ingest_text_mod.resolve_symptom_id = lambda _name: 777
         pacific = ingest_text_mod.timezone(ingest_text_mod.timedelta(hours=-8))
         ingest_text_mod.parse_with_api_events = lambda _text, local_tz=None: [

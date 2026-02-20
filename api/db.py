@@ -1,17 +1,55 @@
 import os
 from pathlib import Path
 from typing import Callable
+from urllib.parse import urlparse
 
 from psycopg import Connection, connect
 from psycopg.rows import dict_row
 
 SCHEMA_PATH = Path(__file__).resolve().parent.parent / "data" / "schema.sql"
 
+_TEST_DB_ALLOWED_HOSTS = {
+    "localhost",
+    "127.0.0.1",
+    "::1",
+    "",
+}
+
+
+def _is_test_environment() -> bool:
+    return bool(os.getenv("PYTEST_CURRENT_TEST")) or os.getenv("APP_ENV", "").strip().lower() == "test"
+
+
+def _assert_safe_test_database_url(database_url: str) -> None:
+    if not _is_test_environment():
+        return
+    parsed = urlparse(database_url)
+    db_name = (parsed.path or "").lstrip("/").lower()
+    host = (parsed.hostname or "").strip().lower()
+    if not db_name:
+        raise RuntimeError("DATABASE_URL must include a database name in test mode")
+    if "test" not in db_name:
+        raise RuntimeError(f"Unsafe DATABASE_URL for tests: db name '{db_name}' must include 'test'")
+    allow_nonlocal = os.getenv("ALLOW_NONLOCAL_TEST_DB", "").strip() == "1"
+    if not allow_nonlocal and host not in _TEST_DB_ALLOWED_HOSTS:
+        raise RuntimeError(
+            f"Unsafe DATABASE_URL for tests: host '{host}' is not local. "
+            "Set ALLOW_NONLOCAL_TEST_DB=1 only for intentionally remote isolated test DBs."
+        )
+
+
+def assert_test_database_safety() -> None:
+    database_url = os.getenv("DATABASE_URL", "").strip()
+    if not database_url:
+        raise RuntimeError("DATABASE_URL is required")
+    _assert_safe_test_database_url(database_url)
+
 # connect to postgres DB
 def get_connection():
     database_url = os.getenv("DATABASE_URL", "").strip()
     if not database_url:
         raise RuntimeError("DATABASE_URL is required")
+    _assert_safe_test_database_url(database_url)
     conn = connect(database_url, row_factory=dict_row)
     return conn
 

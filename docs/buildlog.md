@@ -290,8 +290,37 @@
 - patched ingestion pipeline handling of phrases like "ate x and y" where previously it would only log x
 - fixed reject/verify insight button and ensured it triggered alterations in computed features for the item/symptom involved
 
-# Commit 39
+## Commit 39
 - reinforces ingestion pipeline handling of conversational symptom reporting ie:
     - "couldn't sleep last night"
     - "having trouble remembering things recently"
     - "stomach was messed up last night"
+
+## Commit 40
+- removed legacy user_id bypass logic and implemented requirement for valid token for all endpoints in main.py
+    - removed allowing legacy from all call sites 
+    - added a test to check for token vs payload consistency
+    - added conftest to create test database for test runs and edited db.py to enforce test database before running tests
+    - unit tests now run without hitting production db
+        - for db tests, pytest session creates a random db and sets DATABASE_URL env var to it and then initializes the schema
+        - random db is dropped at test teardown
+        - tests that do not hit db dont require postgres
+    - non-test DATABASE_URL env var values in test mode raise error before any query
+    - table truncation now only open in test mode
+    - tests can no longer accidentaly truncate live DB
+- added CI workflow in ci.yml
+    - starts postgres service and sets APP_ENV=test and TEST_DATABASE_ADMIN_URL
+    - runs pytest
+    - now every push and PR check out code, setup runtime env and dependencies, start required services (postgres), run tests, and then reports a pass/fail in github
+    - without setup, non-db-touching unit tests still run as defualt but full integration tests with DB are easily setup for CI
+- added default unit tests & DB setup for CI annotations to readme
+- added token auth for operational endpoints (where workers hit)
+- switched my automated worker to internal worker invocation in job_worker.py so production worker is not required to continuously auth when I am the one stting him up
+- know: if users were to 1000x, i would need to break job_worker into multiple workers
+    - one worker for recomuputing insights
+    - one worker for RAG vector store evidence retrival
+    - one worker for RAG web search evidence retrival
+    - one worker for citation audits
+    - one worker for model retraining
+- moved non-route event logic from main.py to event_helpers
+- moved pydantic request/response json payload models from main.py to schemas.py

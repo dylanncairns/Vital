@@ -39,17 +39,16 @@ curl -X POST "http://127.0.0.1:8000/rag/sync" \
   -d '{"user_id":1,"online_enabled":true,"max_papers_per_query":8}'
 ```
 
-## Process Background Jobs via API
+## Process Background Jobs (Internal Worker Invocation)
 ```bash
-curl -X POST "http://127.0.0.1:8000/jobs/process" \
-  -H "Content-Type: application/json" \
-  -d '{"limit":100,"max_papers_per_query":5}'
+python3 -m api.job_worker --once --limit 100 --max-papers-per-query 5
 ```
 
 ## Citation Audit (Run Immediately)
 ```bash
 curl -X POST "http://127.0.0.1:8000/citations/audit" \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
   -d '{"limit":300,"delete_missing":true}'
 ```
 
@@ -57,6 +56,7 @@ curl -X POST "http://127.0.0.1:8000/citations/audit" \
 ```bash
 curl -X POST "http://127.0.0.1:8000/citations/audit/enqueue" \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
   -d '{"user_id":1,"limit":300,"delete_missing":true}'
 ```
 

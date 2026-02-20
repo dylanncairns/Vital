@@ -34,6 +34,7 @@ _TEST_TABLES = (
 
 
 def reset_test_database() -> None:
+    api.db.assert_test_database_safety()
     api.db.initialize_database()
     conn = api.db.get_connection()
     try:

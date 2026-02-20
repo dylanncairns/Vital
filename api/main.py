@@ -5,7 +5,6 @@ from contextlib import asynccontextmanager
 from typing import Optional
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
 from psycopg import Error as DatabaseError
 
 from api.db import get_connection, initialize_database
@@ -29,6 +28,45 @@ from api.repositories.jobs import (
     mark_job_failed,
     maybe_enqueue_model_retrain,
 )
+from api.event_helpers import (
+    enqueue_impacted_recompute_jobs,
+    enqueue_recompute_jobs_for_items,
+    enqueue_recompute_jobs_for_symptoms,
+    event_response,
+    insert_event_and_expand,
+    normalize_patch_time_value,
+)
+from api.schemas import (
+    AuthLoginIn,
+    AuthMePatchIn,
+    AuthRegisterIn,
+    AuthTokenOut,
+    AuthUserOut,
+    CitationAuditEnqueueOut,
+    CitationAuditIn,
+    CitationAuditOut,
+    EventIn,
+    EventInsightLinkOut,
+    EventMutationOut,
+    EventOut,
+    EventPatchIn,
+    InsightOut,
+    InsightRejectIn,
+    InsightVerifyIn,
+    InsightVerifyOut,
+    ProcessJobsIn,
+    ProcessJobsOut,
+    RagSyncIn,
+    RagSyncOut,
+    RecomputeInsightsIn,
+    RecomputeInsightsOut,
+    RecurringExposureRuleIn,
+    RecurringExposureRuleOut,
+    RecurringExposureRulePatchIn,
+    TextIngestIn,
+    TextIngestOut,
+    TimelineEvent,
+)
 from ml.citation_audit import audit_claim_citations
 from api.repositories.raw_event_ingest import insert_raw_event_ingest
 from api.repositories.resolve import resolve_item_id, resolve_symptom_id
@@ -43,11 +81,9 @@ from ingestion.expand_exposure import expand_exposure_event
 from ingestion.ingest_text import ingest_text_event
 from ingestion.normalize_event import (
     NormalizationError,
-    NormalizedEvent,
     normalize_event,
     normalize_route,
 )
-from ingestion.time_utils import to_utc_iso
 from ml.insights import (
     list_event_insight_links,
     list_insights,
@@ -110,273 +146,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Validate / standardize input JSON payload format for /events
-# Will contain user_id and either item_id + route or symptom_id + severity
-# supports id or name resolution fields, exact or range time fields, can be raw text
-class EventIn(BaseModel):
-    event_type: str = Field(pattern="^(exposure|symptom)$")
-    user_id: Optional[int] = None
-    timestamp: Optional[str] = None
-    time_range_start: Optional[str] = None
-    time_range_end: Optional[str] = None
-    time_confidence: Optional[str] = Field(default=None, pattern="^(exact|approx|backfilled)$")
-    raw_text: Optional[str] = None
-    item_id: int | None = None
-    item_name: Optional[str] = None
-    route: str | None = None
-    symptom_id: int | None = None
-    symptom_name: Optional[str] = None
-    severity: int | None = None
-
-# Validate / standardize output JSON payload format for /events - adds event id to enable echoing data after an insert
-class EventOut(EventIn):
-    id: int
-    status: Optional[str] = None
-    resolution: Optional[str] = None
-
-# Define the JSON format for an entity in timeline (a timeline row that get/events returns)
-class TimelineEvent(BaseModel):
-    id: int
-    event_type: str
-    user_id: int
-    timestamp: Optional[str] = None
-    time_range_start: Optional[str] = None
-    time_range_end: Optional[str] = None
-    time_confidence: Optional[str] = None
-    raw_text: Optional[str] = None
-    item_id: Optional[int] = None
-    item_name: Optional[str] = None
-    route: Optional[str] = None
-    symptom_id: Optional[int] = None
-    symptom_name: Optional[str] = None
-    severity: Optional[int] = None
-
-# Shape of ingested text from user text blurb input 
-class TextIngestIn(BaseModel):
-    user_id: Optional[int] = None
-    raw_text: str
-    timezone_offset_minutes: Optional[int] = Field(default=None, ge=-840, le=840)
-
-# Response shape for /events/ingest_text
-class TextIngestOut(BaseModel):
-    status: str
-    event_type: Optional[str] = None
-    resolution: Optional[str] = None
-    reason: Optional[str] = None
-
-
-class RecomputeInsightsIn(BaseModel):
-    user_id: Optional[int] = None
-    online_enabled: bool = Field(
-        default_factory=lambda: os.getenv("RAG_ENABLE_ONLINE_RETRIEVAL", "1") == "1"
-    )
-    max_papers_per_query: int = Field(default=8, ge=1, le=30)
-
-
-class RecomputeInsightsOut(BaseModel):
-    status: str
-    user_id: int
-    candidates_considered: int
-    pairs_evaluated: int
-    insights_written: int
-
-
-class RagSyncIn(BaseModel):
-    user_id: Optional[int] = None
-    online_enabled: bool = True
-    max_papers_per_query: int = Field(default=8, ge=1, le=30)
-
-
-class RagSyncOut(BaseModel):
-    status: str
-    user_id: int
-    candidates_considered: int
-    queries_built: int
-    papers_added: int
-    claims_added: int
-
-
-class ProcessJobsIn(BaseModel):
-    limit: int = Field(default=20, ge=1, le=200)
-    max_papers_per_query: int = Field(default=8, ge=1, le=30)
-
-
-class ProcessJobsOut(BaseModel):
-    status: str
-    jobs_claimed: int
-    jobs_done: int
-    jobs_failed: int
-    recompute_jobs_done: int
-    evidence_jobs_done: int
-    model_retrain_jobs_done: int
-    citation_audit_jobs_done: int
-
-
-class CitationAuditIn(BaseModel):
-    user_id: Optional[int] = None
-    limit: int = Field(default=300, ge=1, le=5000)
-    delete_missing: bool = True
-
-
-class CitationAuditOut(BaseModel):
-    status: str
-    scanned_urls: int
-    missing_urls: int
-    deleted_claims: int
-    deleted_papers: int
-    errors: int
-
-
-class CitationAuditEnqueueOut(BaseModel):
-    status: str
-    job_id: Optional[int] = None
-
-
-class EventPatchIn(BaseModel):
-    timestamp: Optional[str] = None
-    time_range_start: Optional[str] = None
-    time_range_end: Optional[str] = None
-    time_confidence: Optional[str] = Field(default=None, pattern="^(exact|approx|backfilled)$")
-    raw_text: Optional[str] = None
-    item_id: int | None = None
-    item_name: Optional[str] = None
-    route: str | None = None
-    symptom_id: int | None = None
-    symptom_name: Optional[str] = None
-    severity: int | None = None
-
-
-class EventMutationOut(BaseModel):
-    status: str
-    event_id: int
-    event_type: str
-    jobs_queued: int
-
-
-class RecurringExposureRuleIn(BaseModel):
-    user_id: Optional[int] = None
-    item_id: int | None = None
-    item_name: Optional[str] = None
-    route: str = "ingestion"
-    start_at: str
-    interval_hours: int = Field(ge=1, le=24 * 30)
-    time_confidence: str = Field(default="approx", pattern="^(exact|approx|backfilled)$")
-    notes: Optional[str] = None
-
-
-class RecurringExposureRulePatchIn(BaseModel):
-    route: str | None = None
-    start_at: str | None = None
-    interval_hours: int | None = Field(default=None, ge=1, le=24 * 30)
-    time_confidence: str | None = Field(default=None, pattern="^(exact|approx|backfilled)$")
-    is_active: bool | None = None
-    notes: Optional[str] = None
-
-
-class RecurringExposureRuleOut(BaseModel):
-    id: int
-    user_id: int
-    item_id: int
-    item_name: str
-    route: str
-    start_at: str
-    interval_hours: int
-    time_confidence: Optional[str] = None
-    is_active: int
-    last_generated_at: Optional[str] = None
-    notes: Optional[str] = None
-    created_at: Optional[str] = None
-    updated_at: Optional[str] = None
-
-
-class InsightCitationOut(BaseModel):
-    source: Optional[str] = None
-    title: Optional[str] = None
-    url: Optional[str] = None
-    snippet: Optional[str] = None
-    evidence_polarity_and_strength: Optional[float] = None
-
-
-class InsightOut(BaseModel):
-    id: int
-    user_id: int
-    item_id: int
-    item_name: str
-    secondary_item_id: Optional[int] = None
-    secondary_item_name: Optional[str] = None
-    is_combo: bool = False
-    combo_key: Optional[str] = None
-    combo_item_ids: Optional[list[int]] = None
-    source_ingredient_id: Optional[int] = None
-    source_ingredient_name: Optional[str] = None
-    symptom_id: int
-    symptom_name: str
-    model_probability: Optional[float] = None
-    evidence_support_score: Optional[float] = None
-    evidence_strength_score: Optional[float] = None
-    evidence_quality_score: Optional[float] = None
-    penalty_score: Optional[float] = None
-    overall_confidence_score: Optional[float] = None
-    evidence_summary: Optional[str] = None
-    display_decision_reason: Optional[str] = None
-    display_status: Optional[str] = None
-    user_verified: bool = False
-    user_rejected: bool = False
-    created_at: Optional[str] = None
-    citations: list[InsightCitationOut]
-
-
-class EventInsightLinkOut(BaseModel):
-    event_type: str
-    event_id: int
-    insight_id: int
-
-
-class InsightVerifyIn(BaseModel):
-    user_id: Optional[int] = None
-    verified: bool
-
-
-class InsightVerifyOut(BaseModel):
-    status: str
-    insight_id: int
-    user_id: int
-    item_id: int
-    symptom_id: int
-    verified: bool
-    rejected: bool = False
-
-
-class InsightRejectIn(BaseModel):
-    user_id: Optional[int] = None
-    rejected: bool
-
-
-class AuthRegisterIn(BaseModel):
-    username: str
-    password: str
-    name: Optional[str] = None
-
-
-class AuthLoginIn(BaseModel):
-    username: str
-    password: str
-
-
-class AuthUserOut(BaseModel):
-    id: int
-    username: str
-    name: Optional[str] = None
-
-
-class AuthTokenOut(BaseModel):
-    token: str
-    user: AuthUserOut
-
-
-class AuthMePatchIn(BaseModel):
-    name: str
-
 
 def _extract_bearer_token(authorization: Optional[str]) -> Optional[str]:
     if authorization is None:
@@ -396,7 +165,6 @@ def _resolve_request_user_id(
     *,
     explicit_user_id: Optional[int],
     authorization: Optional[str],
-    allow_legacy_explicit: bool = True,
 ) -> int:
     token = _extract_bearer_token(authorization)
     auth_user = resolve_user_from_token(token) if token else None
@@ -405,213 +173,7 @@ def _resolve_request_user_id(
         if explicit_user_id is not None and int(explicit_user_id) != auth_user_id:
             raise HTTPException(status_code=403, detail="user_id does not match auth token")
         return auth_user_id
-    if allow_legacy_explicit and explicit_user_id is not None:
-        return int(explicit_user_id)
     raise HTTPException(status_code=401, detail="Authentication required")
-
-
-def _normalize_patch_time_value(value: str | None) -> str | None:
-    if value is None:
-        return None
-    normalized = to_utc_iso(value, strict=True)
-    if normalized is None:
-        return None
-    return normalized
-
-
-def _event_response(event_id: int, event: dict, status: str | None = None, resolution: str | None = None) -> dict:
-    # one response shape for both successful writes and queued failures
-    return {
-        "id": event_id,
-        "event_type": event.get("event_type"),
-        "user_id": event.get("user_id"),
-        "timestamp": event.get("timestamp"),
-        "time_range_start": event.get("time_range_start"),
-        "time_range_end": event.get("time_range_end"),
-        "time_confidence": event.get("time_confidence"),
-        "raw_text": event.get("raw_text"),
-        "item_id": event.get("item_id"),
-        "route": event.get("route"),
-        "symptom_id": event.get("symptom_id"),
-        "severity": event.get("severity"),
-        "status": status,
-        "resolution": resolution,
-    }
-
-def _insert_event_and_expand(normalized: NormalizedEvent) -> int:
-    # one db transaction for insert + exposure expansion
-    conn = get_connection()
-    try:
-        if normalized["event_type"] == "exposure":
-            cursor = conn.execute(
-                """
-                INSERT INTO exposure_events (
-                    user_id, item_id, timestamp, time_range_start, time_range_end,
-                    time_confidence, ingested_at, raw_text, route
-                )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                RETURNING id
-                """,
-                (
-                    normalized["user_id"],
-                    normalized["item_id"],
-                    normalized["timestamp"],
-                    normalized["time_range_start"],
-                    normalized["time_range_end"],
-                    normalized["time_confidence"],
-                    normalized["ingested_at"],
-                    normalized["raw_text"],
-                    normalized["route"],
-                ),
-            )
-            created_row = cursor.fetchone()
-            created_id = int(created_row["id"])
-            # insert exposure expansion rows before commit so writes are atomic
-            expand_exposure_event(created_id, conn=conn)
-        else:
-            cursor = conn.execute(
-                """
-                INSERT INTO symptom_events (
-                    user_id, symptom_id, timestamp, time_range_start, time_range_end,
-                    time_confidence, ingested_at, raw_text, severity
-                )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                RETURNING id
-                """,
-                (
-                    normalized["user_id"],
-                    normalized["symptom_id"],
-                    normalized["timestamp"],
-                    normalized["time_range_start"],
-                    normalized["time_range_end"],
-                    normalized["time_confidence"],
-                    normalized["ingested_at"],
-                    normalized["raw_text"],
-                    normalized["severity"],
-                ),
-            )
-            created_row = cursor.fetchone()
-            created_id = int(created_row["id"])
-
-        conn.commit()
-        return created_id
-    except DatabaseError:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
-
-
-def _enqueue_impacted_recompute_jobs(normalized: NormalizedEvent) -> int:
-    user_id = int(normalized["user_id"])
-    jobs_added = 0
-    conn = get_connection()
-    try:
-        if normalized["event_type"] == "exposure":
-            item_id = int(normalized["item_id"])
-            symptom_rows = conn.execute(
-                "SELECT DISTINCT symptom_id FROM symptom_events WHERE user_id = %s",
-                (user_id,),
-            ).fetchall()
-            symptom_ids = [int(row["symptom_id"]) for row in symptom_rows if row["symptom_id"] is not None]
-            if not symptom_ids:
-                return 0
-            for symptom_id in symptom_ids:
-                job_id = enqueue_background_job(
-                    user_id=user_id,
-                    job_type=JOB_RECOMPUTE_CANDIDATE,
-                    item_id=item_id,
-                    symptom_id=symptom_id,
-                    payload={"trigger": "event_exposure"},
-                    conn=conn,
-                )
-                if job_id is not None:
-                    jobs_added += 1
-        else:
-            symptom_id = int(normalized["symptom_id"])
-            item_rows = conn.execute(
-                "SELECT DISTINCT item_id FROM exposure_events WHERE user_id = %s",
-                (user_id,),
-            ).fetchall()
-            item_ids = [int(row["item_id"]) for row in item_rows if row["item_id"] is not None]
-            if not item_ids:
-                return 0
-            for item_id in item_ids:
-                job_id = enqueue_background_job(
-                    user_id=user_id,
-                    job_type=JOB_RECOMPUTE_CANDIDATE,
-                    item_id=item_id,
-                    symptom_id=symptom_id,
-                    payload={"trigger": "event_symptom"},
-                    conn=conn,
-                )
-                if job_id is not None:
-                    jobs_added += 1
-        if jobs_added > 0:
-            conn.commit()
-        return jobs_added
-    finally:
-        conn.close()
-
-
-def _enqueue_recompute_jobs_for_items(*, user_id: int, item_ids: set[int], trigger: str) -> int:
-    if not item_ids:
-        return 0
-    conn = get_connection()
-    jobs_added = 0
-    try:
-        symptom_rows = conn.execute(
-            "SELECT DISTINCT symptom_id FROM symptom_events WHERE user_id = %s",
-            (int(user_id),),
-        ).fetchall()
-        symptom_ids = [int(row["symptom_id"]) for row in symptom_rows if row["symptom_id"] is not None]
-        for item_id in sorted(item_ids):
-            for symptom_id in symptom_ids:
-                job_id = enqueue_background_job(
-                    user_id=int(user_id),
-                    job_type=JOB_RECOMPUTE_CANDIDATE,
-                    item_id=int(item_id),
-                    symptom_id=int(symptom_id),
-                    payload={"trigger": trigger},
-                    conn=conn,
-                )
-                if job_id is not None:
-                    jobs_added += 1
-        if jobs_added > 0:
-            conn.commit()
-        return jobs_added
-    finally:
-        conn.close()
-
-
-def _enqueue_recompute_jobs_for_symptoms(*, user_id: int, symptom_ids: set[int], trigger: str) -> int:
-    if not symptom_ids:
-        return 0
-    conn = get_connection()
-    jobs_added = 0
-    try:
-        item_rows = conn.execute(
-            "SELECT DISTINCT item_id FROM exposure_events WHERE user_id = %s",
-            (int(user_id),),
-        ).fetchall()
-        item_ids = [int(row["item_id"]) for row in item_rows if row["item_id"] is not None]
-        for symptom_id in sorted(symptom_ids):
-            for item_id in item_ids:
-                job_id = enqueue_background_job(
-                    user_id=int(user_id),
-                    job_type=JOB_RECOMPUTE_CANDIDATE,
-                    item_id=int(item_id),
-                    symptom_id=int(symptom_id),
-                    payload={"trigger": trigger},
-                    conn=conn,
-                )
-                if job_id is not None:
-                    jobs_added += 1
-        if jobs_added > 0:
-            conn.commit()
-        return jobs_added
-    finally:
-        conn.close()
 
 
 @app.post("/auth/register", response_model=AuthTokenOut)
@@ -696,7 +258,6 @@ def create_event(payload: EventIn, authorization: Optional[str] = Header(default
             "user_id": _resolve_request_user_id(
                 explicit_user_id=payload.user_id,
                 authorization=authorization,
-                allow_legacy_explicit=True,
             )
         }
     )
@@ -707,18 +268,18 @@ def create_event(payload: EventIn, authorization: Optional[str] = Header(default
         payload_dict = payload.model_dump()
         # keep failed payload for later parsing/review in raw_event_ingest table
         insert_raw_event_ingest(payload.user_id, json.dumps(payload_dict), "failed", str(exc))
-        return _event_response(-1, payload_dict, status="queued", resolution="pending")
+        return event_response(-1, payload_dict, status="queued", resolution="pending")
 
     try:
-        created_id = _insert_event_and_expand(normalized)
+        created_id = insert_event_and_expand(normalized)
     except DatabaseError as exc:
         # db write failed, queue for retry/review instead of surfacing stack trace
         insert_raw_event_ingest(normalized["user_id"], json.dumps(normalized), "failed", str(exc))
-        return _event_response(-1, normalized, status="queued", resolution="db_error")
+        return event_response(-1, normalized, status="queued", resolution="db_error")
 
-    _enqueue_impacted_recompute_jobs(normalized)
+    enqueue_impacted_recompute_jobs(normalized)
     _maybe_enqueue_model_retrain_safe(trigger_user_id=int(normalized["user_id"]))
-    return _event_response(created_id, normalized)
+    return event_response(created_id, normalized)
 
 
 @app.patch("/events/{event_type}/{event_id}", response_model=EventMutationOut)
@@ -732,7 +293,6 @@ def patch_event(
     user_id = _resolve_request_user_id(
         explicit_user_id=user_id,
         authorization=authorization,
-        allow_legacy_explicit=True,
     )
     normalized_type = event_type.strip().lower()
     if normalized_type not in {"exposure", "symptom"}:
@@ -765,19 +325,19 @@ def patch_event(
             if payload.timestamp is not None:
                 updates.append("timestamp = %s")
                 try:
-                    params.append(_normalize_patch_time_value(payload.timestamp))
+                    params.append(normalize_patch_time_value(payload.timestamp))
                 except ValueError:
                     raise HTTPException(status_code=400, detail="invalid datetime format: timestamp")
             if payload.time_range_start is not None:
                 updates.append("time_range_start = %s")
                 try:
-                    params.append(_normalize_patch_time_value(payload.time_range_start))
+                    params.append(normalize_patch_time_value(payload.time_range_start))
                 except ValueError:
                     raise HTTPException(status_code=400, detail="invalid datetime format: time_range_start")
             if payload.time_range_end is not None:
                 updates.append("time_range_end = %s")
                 try:
-                    params.append(_normalize_patch_time_value(payload.time_range_end))
+                    params.append(normalize_patch_time_value(payload.time_range_end))
                 except ValueError:
                     raise HTTPException(status_code=400, detail="invalid datetime format: time_range_end")
             if payload.time_confidence is not None:
@@ -797,7 +357,7 @@ def patch_event(
             conn.commit()
             old_item_id = int(existing["item_id"])
             new_item_id = int(resolved_item_id) if resolved_item_id is not None else old_item_id
-            jobs_queued = _enqueue_recompute_jobs_for_items(
+            jobs_queued = enqueue_recompute_jobs_for_items(
                 user_id=int(user_id),
                 item_ids={old_item_id, new_item_id},
                 trigger="event_patch_exposure",
@@ -823,19 +383,19 @@ def patch_event(
             if payload.timestamp is not None:
                 updates.append("timestamp = %s")
                 try:
-                    params.append(_normalize_patch_time_value(payload.timestamp))
+                    params.append(normalize_patch_time_value(payload.timestamp))
                 except ValueError:
                     raise HTTPException(status_code=400, detail="invalid datetime format: timestamp")
             if payload.time_range_start is not None:
                 updates.append("time_range_start = %s")
                 try:
-                    params.append(_normalize_patch_time_value(payload.time_range_start))
+                    params.append(normalize_patch_time_value(payload.time_range_start))
                 except ValueError:
                     raise HTTPException(status_code=400, detail="invalid datetime format: time_range_start")
             if payload.time_range_end is not None:
                 updates.append("time_range_end = %s")
                 try:
-                    params.append(_normalize_patch_time_value(payload.time_range_end))
+                    params.append(normalize_patch_time_value(payload.time_range_end))
                 except ValueError:
                     raise HTTPException(status_code=400, detail="invalid datetime format: time_range_end")
             if payload.time_confidence is not None:
@@ -853,7 +413,7 @@ def patch_event(
             conn.commit()
             old_symptom_id = int(existing["symptom_id"])
             new_symptom_id = int(resolved_symptom_id) if resolved_symptom_id is not None else old_symptom_id
-            jobs_queued = _enqueue_recompute_jobs_for_symptoms(
+            jobs_queued = enqueue_recompute_jobs_for_symptoms(
                 user_id=int(user_id),
                 symptom_ids={old_symptom_id, new_symptom_id},
                 trigger="event_patch_symptom",
@@ -875,7 +435,6 @@ def delete_event(
     user_id = _resolve_request_user_id(
         explicit_user_id=user_id,
         authorization=authorization,
-        allow_legacy_explicit=True,
     )
     normalized_type = event_type.strip().lower()
     if normalized_type not in {"exposure", "symptom"}:
@@ -893,7 +452,7 @@ def delete_event(
             conn.execute("DELETE FROM exposure_expansions WHERE exposure_event_id = %s", (int(event_id),))
             conn.execute("DELETE FROM exposure_events WHERE id = %s AND user_id = %s", (int(event_id), int(user_id)))
             conn.commit()
-            jobs_queued = _enqueue_recompute_jobs_for_items(
+            jobs_queued = enqueue_recompute_jobs_for_items(
                 user_id=int(user_id),
                 item_ids={item_id},
                 trigger="event_delete_exposure",
@@ -908,7 +467,7 @@ def delete_event(
             symptom_id = int(existing["symptom_id"])
             conn.execute("DELETE FROM symptom_events WHERE id = %s AND user_id = %s", (int(event_id), int(user_id)))
             conn.commit()
-            jobs_queued = _enqueue_recompute_jobs_for_symptoms(
+            jobs_queued = enqueue_recompute_jobs_for_symptoms(
                 user_id=int(user_id),
                 symptom_ids={symptom_id},
                 trigger="event_delete_symptom",
@@ -924,7 +483,6 @@ def get_recurring_exposures(user_id: Optional[int] = None, authorization: Option
     user_id = _resolve_request_user_id(
         explicit_user_id=user_id,
         authorization=authorization,
-        allow_legacy_explicit=True,
     )
     return list_recurring_rules(int(user_id))
 
@@ -934,7 +492,6 @@ def create_recurring_exposure(payload: RecurringExposureRuleIn, authorization: O
     user_id = _resolve_request_user_id(
         explicit_user_id=payload.user_id,
         authorization=authorization,
-        allow_legacy_explicit=True,
     )
     item_id = payload.item_id
     if item_id is None and payload.item_name:
@@ -972,7 +529,6 @@ def patch_recurring_exposure(
     user_id = _resolve_request_user_id(
         explicit_user_id=user_id,
         authorization=authorization,
-        allow_legacy_explicit=True,
     )
     normalized_patch_route = None
     if payload.route is not None:
@@ -1005,7 +561,6 @@ def remove_recurring_exposure(rule_id: int, user_id: Optional[int] = None, autho
     user_id = _resolve_request_user_id(
         explicit_user_id=user_id,
         authorization=authorization,
-        allow_legacy_explicit=True,
     )
     deleted = delete_recurring_rule(user_id=int(user_id), rule_id=int(rule_id))
     return {"status": "ok" if deleted else "not_found", "rule_id": int(rule_id)}
@@ -1017,11 +572,10 @@ def get_events(user_id: Optional[int] = None, authorization: Optional[str] = Hea
     user_id = _resolve_request_user_id(
         explicit_user_id=user_id,
         authorization=authorization,
-        allow_legacy_explicit=True,
     )
     inserted_item_ids = materialize_recurring_exposures(user_id=int(user_id))
     if inserted_item_ids:
-        _enqueue_recompute_jobs_for_items(
+        enqueue_recompute_jobs_for_items(
             user_id=int(user_id),
             item_ids=set(int(v) for v in inserted_item_ids),
             trigger="recurring_materialize",
@@ -1034,7 +588,6 @@ def ingest_text(payload: TextIngestIn, authorization: Optional[str] = Header(def
     user_id = _resolve_request_user_id(
         explicit_user_id=payload.user_id,
         authorization=authorization,
-        allow_legacy_explicit=True,
     )
     if not payload.raw_text.strip():
         return {"status": "ignored", "reason": "empty_raw_text"}
@@ -1050,7 +603,6 @@ def recompute_user_insights(payload: RecomputeInsightsIn, authorization: Optiona
     user_id = _resolve_request_user_id(
         explicit_user_id=payload.user_id,
         authorization=authorization,
-        allow_legacy_explicit=True,
     )
     result = recompute_insights(user_id)
     return {
@@ -1065,7 +617,6 @@ def sync_rag_evidence(payload: RagSyncIn, authorization: Optional[str] = Header(
     user_id = _resolve_request_user_id(
         explicit_user_id=payload.user_id,
         authorization=authorization,
-        allow_legacy_explicit=True,
     )
     candidates = list_rag_sync_candidates(user_id)
     conn = get_connection()
@@ -1094,7 +645,11 @@ def sync_rag_evidence(payload: RagSyncIn, authorization: Optional[str] = Header(
 
 
 @app.post("/citations/audit", response_model=CitationAuditOut)
-def audit_citations(payload: CitationAuditIn):
+def audit_citations(payload: CitationAuditIn, authorization: Optional[str] = Header(default=None)):
+    _resolve_request_user_id(
+        explicit_user_id=payload.user_id,
+        authorization=authorization,
+    )
     conn = get_connection()
     try:
         result = audit_claim_citations(
@@ -1112,8 +667,11 @@ def audit_citations(payload: CitationAuditIn):
 
 
 @app.post("/citations/audit/enqueue", response_model=CitationAuditEnqueueOut)
-def enqueue_citation_audit(payload: CitationAuditIn):
-    enqueue_user_id = int(payload.user_id) if payload.user_id is not None else 1
+def enqueue_citation_audit(payload: CitationAuditIn, authorization: Optional[str] = Header(default=None)):
+    enqueue_user_id = _resolve_request_user_id(
+        explicit_user_id=payload.user_id,
+        authorization=authorization,
+    )
     job_id = enqueue_background_job(
         user_id=enqueue_user_id,
         job_type=JOB_CITATION_AUDIT,
@@ -1124,8 +682,7 @@ def enqueue_citation_audit(payload: CitationAuditIn):
     return {"status": "ok", "job_id": job_id}
 
 
-@app.post("/jobs/process", response_model=ProcessJobsOut)
-def process_background_jobs(payload: ProcessJobsIn):
+def process_background_jobs_batch(payload: ProcessJobsIn):
     jobs = list_pending_jobs(limit=payload.limit)
     jobs_done = 0
     jobs_failed = 0
@@ -1265,13 +822,21 @@ def process_background_jobs(payload: ProcessJobsIn):
         "citation_audit_jobs_done": citation_audit_jobs_done,
     }
 
+
+@app.post("/jobs/process", response_model=ProcessJobsOut)
+def process_background_jobs(payload: ProcessJobsIn, authorization: Optional[str] = Header(default=None)):
+    _resolve_request_user_id(
+        explicit_user_id=None,
+        authorization=authorization,
+    )
+    return process_background_jobs_batch(payload)
+
 # list insights per user
 @app.get("/insights", response_model=list[InsightOut])
 def get_insights(user_id: Optional[int] = None, include_suppressed: bool = True, authorization: Optional[str] = Header(default=None)):
     user_id = _resolve_request_user_id(
         explicit_user_id=user_id,
         authorization=authorization,
-        allow_legacy_explicit=True,
     )
     return list_insights(user_id=user_id, include_suppressed=include_suppressed)
 
@@ -1281,7 +846,6 @@ def get_event_insight_links(user_id: Optional[int] = None, supported_only: bool 
     user_id = _resolve_request_user_id(
         explicit_user_id=user_id,
         authorization=authorization,
-        allow_legacy_explicit=True,
     )
     return list_event_insight_links(user_id=user_id, supported_only=supported_only)
 
@@ -1291,7 +855,6 @@ def verify_insight(insight_id: int, payload: InsightVerifyIn, authorization: Opt
     user_id = _resolve_request_user_id(
         explicit_user_id=payload.user_id,
         authorization=authorization,
-        allow_legacy_explicit=True,
     )
     try:
         result = set_insight_verification(
@@ -1312,7 +875,6 @@ def reject_insight(insight_id: int, payload: InsightRejectIn, authorization: Opt
     user_id = _resolve_request_user_id(
         explicit_user_id=payload.user_id,
         authorization=authorization,
-        allow_legacy_explicit=True,
     )
     try:
         result = set_insight_rejection(

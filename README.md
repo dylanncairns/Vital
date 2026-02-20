@@ -19,7 +19,14 @@
 - Terminal 1 (from repo root): `uvicorn api.main:app --reload`
 - Terminal 2 (from apps/mobile or apps/web): `npm install && npm start`
 - Terminal 3 (from repo root): `python3 -m api.job_worker --limit 100 --max-papers-per-query 5`
-- Test suite (from repo root): `PYTHONPATH=. pytest -q`
+
+- Quick tests (no DB required, default): `PYTHONPATH=. pytest -q`
+- Full tests (includes DB integration tests):
+  - Start local Postgres (example): `docker run --rm -p 5432:5432 -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=postgres postgres:16`
+  - Set: `APP_ENV=test` and `TEST_DATABASE_ADMIN_URL=postgresql://postgres:postgres@127.0.0.1:5432/postgres`
+  - Run DB tests: `PYTHONPATH=. pytest -q -m needs_db`
+  - Or run all tests: `PYTHONPATH=. pytest -q -m "needs_db or not needs_db"`
+  - Tests create and drop an isolated `vital_test_*` database automatically.
 
 ## How it Works
 - [Backend is built on FastAPI](api/main.py)
@@ -69,7 +76,6 @@
 - Random bearer session tokens with expiry and revocation
 - Token to user mismatch protection
 - Parameterized SQL queries across repositories
-- Currently phasing out explicit user_id fallback when token auth fails
 
 
 ## Tests
@@ -102,7 +108,7 @@
 - Voice-to-text event logging
 - Better brand-specific item-ingredients expansion
 - Improved model computation
-- Improved token security and endpoint authentication guard
+- Operational endpoint protection
 - Admin and user role separation
 - Publication!
 - Long term vision includes integration of bloodwork, wearable data, and genetic sequencing

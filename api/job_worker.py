@@ -3,11 +3,12 @@ from __future__ import annotations
 import argparse
 import time
 
-from api.main import ProcessJobsIn, process_background_jobs
+from api.main import process_background_jobs_batch
+from api.schemas import ProcessJobsIn
 
 
 def run_once(*, limit: int = 20, max_papers_per_query: int = 8) -> dict:
-    return process_background_jobs(
+    return process_background_jobs_batch(
         ProcessJobsIn(limit=limit, max_papers_per_query=max_papers_per_query)
     )
 

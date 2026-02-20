@@ -4,7 +4,7 @@ import unittest
 from unittest.mock import patch
 
 import api.db
-from api.main import ProcessJobsIn, process_background_jobs
+from api.main import ProcessJobsIn, process_background_jobs_batch
 from api.repositories.jobs import (
     DEFAULT_MAX_FAILED_ATTEMPTS,
     JOB_CITATION_AUDIT,
@@ -90,7 +90,7 @@ class BackgroundJobsTests(unittest.TestCase):
         )
         self.assertIsNotNone(created)
 
-        result = process_background_jobs(ProcessJobsIn(limit=10, max_papers_per_query=1))
+        result = process_background_jobs_batch(ProcessJobsIn(limit=10, max_papers_per_query=1))
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["jobs_claimed"], 1)
         self.assertEqual(result["jobs_done"], 1)
@@ -131,7 +131,7 @@ class BackgroundJobsTests(unittest.TestCase):
             patch("api.main.ingest_sources_for_candidates", return_value={"uploaded_count": 1, "source_files": ["x.txt"]}) as ingest_mock,
             patch("api.main.recompute_insights", return_value={"candidates_considered": 1, "pairs_evaluated": 1, "insights_written": 1}),
         ):
-            result = process_background_jobs(ProcessJobsIn(limit=10, max_papers_per_query=1))
+            result = process_background_jobs_batch(ProcessJobsIn(limit=10, max_papers_per_query=1))
 
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["jobs_done"], 1)
@@ -252,7 +252,7 @@ class BackgroundJobsTests(unittest.TestCase):
                 "errors": 0,
             },
         ) as audit_mock:
-            result = process_background_jobs(ProcessJobsIn(limit=10, max_papers_per_query=1))
+            result = process_background_jobs_batch(ProcessJobsIn(limit=10, max_papers_per_query=1))
 
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["jobs_done"], 1)
