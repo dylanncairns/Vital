@@ -236,6 +236,16 @@ def _upsert_paper(conn, paper: dict[str, Any], *, ingested_at: str) -> int:
         ).fetchone()
     if existing:
         return int(existing["id"])
+    # Some tests seed explicit IDs; align identity sequence before default insert.
+    conn.execute(
+        """
+        SELECT setval(
+            pg_get_serial_sequence('papers', 'id'),
+            COALESCE((SELECT MAX(id) FROM papers), 1),
+            (SELECT MAX(id) IS NOT NULL FROM papers)
+        )
+        """
+    )
     cursor = conn.execute(
         """
         INSERT INTO papers (title, url, abstract, publication_date, source, ingested_at)

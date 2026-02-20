@@ -321,6 +321,7 @@ def _apply_migrations(conn: Connection) -> None:
         _migration_013_rag_source_documents,
         _migration_014_claims_polarity_float,
         _migration_015_claims_evidence_metadata_columns,
+        _migration_016_exposure_expansion_uniqueness,
     ]
     for migration in migrations:
         migration(conn)
@@ -626,6 +627,25 @@ def _migration_015_claims_evidence_metadata_columns(conn: Connection) -> None:
     for column_name, column_type in claim_columns:
         if not _column_exists(conn, "claims", column_name):
             conn.execute(f"ALTER TABLE claims ADD COLUMN {column_name} {column_type}")
+
+
+def _migration_016_exposure_expansion_uniqueness(conn: Connection) -> None:
+    # Keep the newest row when duplicates exist so ON CONFLICT targets are valid.
+    conn.execute(
+        """
+        DELETE FROM exposure_expansions a
+        USING exposure_expansions b
+        WHERE a.id < b.id
+          AND a.exposure_event_id = b.exposure_event_id
+          AND a.ingredient_id IS NOT DISTINCT FROM b.ingredient_id
+        """
+    )
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_exposure_expansions_event_ingredient_unique
+        ON exposure_expansions(exposure_event_id, ingredient_id)
+        """
+    )
 
 
 def _execute_script(conn: Connection, script: str) -> None:

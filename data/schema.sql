@@ -301,6 +301,7 @@ CREATE TABLE rag_source_documents (
 );
 CREATE INDEX idx_claims_ingredient_symptom_paper ON claims(ingredient_id, symptom_id, paper_id);
 CREATE INDEX idx_claims_item_symptom_paper ON claims(item_id, symptom_id, paper_id);
+CREATE UNIQUE INDEX idx_exposure_expansions_event_ingredient_unique ON exposure_expansions(exposure_event_id, ingredient_id);
 CREATE INDEX idx_insight_event_links_user_event ON insight_event_links(user_id, event_type, event_id);
 CREATE INDEX idx_insight_event_links_insight ON insight_event_links(insight_id);
 CREATE INDEX idx_insight_verifications_user ON insight_verifications(user_id);

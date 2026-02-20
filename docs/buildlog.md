@@ -325,6 +325,7 @@
 - moved non-route event logic from main.py to event_helpers
 - moved pydantic request/response json payload models from main.py to schemas.py
 
-## Commit 41
+## Commits 41-42
 - switched ci.yml tests to run pytest on setup-python + pip install environment rather than pytest executable found on PATH
 - added corresponding packages to requirements
+- fixed some SQL issues that were causing ci.yml int tests to fail

@@ -60,8 +60,8 @@ def enqueue_background_job(
             WHERE user_id = %s
               AND job_type = %s
               AND status IN ('pending', 'running')
-              AND ((item_id IS NULL AND %s IS NULL) OR item_id = %s)
-              AND ((symptom_id IS NULL AND %s IS NULL) OR symptom_id = %s)
+              AND ((item_id IS NULL AND %s::bigint IS NULL) OR item_id = %s::bigint)
+              AND ((symptom_id IS NULL AND %s::bigint IS NULL) OR symptom_id = %s::bigint)
             LIMIT 1
             """,
             (user_id, job_type, item_id, item_id, symptom_id, symptom_id),
