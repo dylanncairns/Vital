@@ -173,10 +173,11 @@ def _resolve_request_user_id(
         if explicit_user_id is not None and int(explicit_user_id) != auth_user_id:
             raise HTTPException(status_code=403, detail="user_id does not match auth token")
         return auth_user_id
-    # Allow direct function invocation in tests only when no auth header is provided.
+    # Allow direct function invocation in tests when no auth header was actually provided.
+    # FastAPI dependency defaults (e.g., Header(...)) are non-string sentinel objects.
     if (
         explicit_user_id is not None
-        and authorization is None
+        and (authorization is None or not isinstance(authorization, str))
         and os.getenv("APP_ENV", "").strip().lower() == "test"
     ):
         return int(explicit_user_id)
