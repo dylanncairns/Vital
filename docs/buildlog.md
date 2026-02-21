@@ -342,7 +342,7 @@
 - annotated functionalities in api files
 - reorganized ml repo and moved training to its own section
 
-## Commits 47-48
+## Commits 47-49
 - added user contribution to model metric in account UI
     - backend schema and query logic per-user that counts from insight_verifications
         - endpoint user_id resolve w token auto scopes to per-user

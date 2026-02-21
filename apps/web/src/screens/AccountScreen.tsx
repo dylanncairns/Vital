@@ -206,9 +206,9 @@ export default function AccountScreen() {
         >
           {"You've "}
           <Text style={{ color: "#1C8D57", fontFamily: FONT_SEMIBOLD }}>verified</Text>
-          {" and "}
+          {" or "}
           <Text style={{ color: "#C53F3F", fontFamily: FONT_SEMIBOLD }}>rejected</Text>
-          {` ${feedbackCount} insights! Thank you for helping our model learn and enabling us to surface more accurate insights for all users!`}
+          {` ${feedbackCount} insights - thank you for empowering our mission to surface accurate health insights!`}
         </Text>
       </View>
     </SafeAreaView>
