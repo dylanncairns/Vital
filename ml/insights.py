@@ -2016,6 +2016,42 @@ def list_event_insight_links(user_id: int, *, supported_only: bool = True) -> li
         conn.close()
 
 
+def list_insight_feedback_stats(*, user_id: int, surfaced_only: bool = True) -> dict[str, Any]:
+    conn = get_connection()
+    try:
+        sql = """
+            SELECT
+                COALESCE(SUM(CASE WHEN COALESCE(v.verified, 0) = 1 THEN 1 ELSE 0 END), 0) AS verified_count,
+                COALESCE(SUM(CASE WHEN COALESCE(v.rejected, 0) = 1 THEN 1 ELSE 0 END), 0) AS rejected_count
+            FROM insight_verifications v
+            WHERE v.user_id = %s
+        """
+        params: list[Any] = [int(user_id)]
+        if surfaced_only:
+            sql += """
+              AND EXISTS (
+                  SELECT 1
+                  FROM insights i
+                  WHERE i.user_id = v.user_id
+                    AND i.item_id = v.item_id
+                    AND i.symptom_id = v.symptom_id
+                    AND (i.display_decision_reason IS NULL OR i.display_decision_reason NOT LIKE 'suppressed_%%')
+              )
+            """
+        row = conn.execute(sql, tuple(params)).fetchone()
+        verified_count = int((row["verified_count"] if row is not None else 0) or 0)
+        rejected_count = int((row["rejected_count"] if row is not None else 0) or 0)
+        return {
+            "user_id": int(user_id),
+            "verified_count": verified_count,
+            "rejected_count": rejected_count,
+            "total_count": verified_count + rejected_count,
+            "surfaced_only": bool(surfaced_only),
+        }
+    finally:
+        conn.close()
+
+
 def set_insight_verification(
     *,
     user_id: int,

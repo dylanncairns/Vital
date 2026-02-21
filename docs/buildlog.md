@@ -341,3 +341,13 @@
     - separated some job processing logic from main logic
 - annotated functionalities in api files
 - reorganized ml repo and moved training to its own section
+
+## Commit 47
+- added user contribution to model metric in account UI
+    - backend schema and query logic per-user that counts from insight_verifications
+        - endpoint user_id resolve w token auto scopes to per-user
+    - frontend insightfeedback type added to events
+        - fetch added to client.ts
+        - displayed in account UI under delete account for web and mobile w stats fetch and state
+    - added unit test to verify user scoping and zero state if stats fetch fails (doesnt break page)
+- fixed some int tests that were messed up by repo reorganization

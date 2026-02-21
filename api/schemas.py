@@ -252,6 +252,14 @@ class InsightRejectIn(BaseModel):
     rejected: bool
 
 
+class InsightFeedbackStatsOut(BaseModel):
+    user_id: int
+    verified_count: int
+    rejected_count: int
+    total_count: int
+    surfaced_only: bool = True
+
+
 class AuthRegisterIn(BaseModel):
     username: str
     password: str

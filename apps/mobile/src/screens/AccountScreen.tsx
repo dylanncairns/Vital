@@ -1,7 +1,8 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Alert, Pressable, Text, TextInput, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
+import { fetchInsightFeedbackStats } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 
 const FONT_SEMIBOLD = "Exo2-SemiBold";
@@ -13,8 +14,31 @@ export default function AccountScreen() {
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [feedbackCount, setFeedbackCount] = useState(0);
 
   const username = useMemo(() => user?.username ?? "", [user]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadFeedbackStats() {
+      if (!user?.id) {
+        if (!cancelled) setFeedbackCount(0);
+        return;
+      }
+      try {
+        const stats = await fetchInsightFeedbackStats(user.id);
+        if (!cancelled) {
+          setFeedbackCount(Number(stats.total_count || 0));
+        }
+      } catch {
+        if (!cancelled) setFeedbackCount(0);
+      }
+    }
+    void loadFeedbackStats();
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.id]);
 
   async function confirmAction(title: string, message: string): Promise<boolean> {
     if (typeof window !== "undefined" && typeof window.confirm === "function") {
@@ -159,6 +183,13 @@ export default function AccountScreen() {
         >
           <Text style={{ color: "#8C92A6", fontFamily: "Exo2-Regular", fontSize: 12 }}>Delete account</Text>
         </Pressable>
+        <Text style={{ color: "#5C6784", fontFamily: "Exo2-Regular", fontSize: 12, textAlign: "center", lineHeight: 18 }}>
+          {"You've "}
+          <Text style={{ color: "#1C8D57", fontFamily: FONT_SEMIBOLD }}>verified</Text>
+          {" and "}
+          <Text style={{ color: "#C53F3F", fontFamily: FONT_SEMIBOLD }}>rejected</Text>
+          {` ${feedbackCount} insights! Thank you for helping our model learn and enabling us to surface more accurate insights for all users!`}
+        </Text>
       </View>
     </SafeAreaView>
   );

@@ -11,6 +11,7 @@ import {
   CreateRecurringExposureRequest,
   PatchRecurringExposureRequest,
   EventInsightLink,
+  InsightFeedbackStats,
 } from "../models/events";
 
 // API base URL (Expo env in production, localhost fallback in dev)
@@ -215,6 +216,18 @@ export async function fetchEventInsightLinks(
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`Failed to fetch event insight links: ${res.status} ${text}`);
+  }
+  return res.json();
+}
+
+export async function fetchInsightFeedbackStats(userId: number): Promise<InsightFeedbackStats> {
+  const res = await fetch(
+    `${BASE_URL}/insights/feedback_stats?user_id=${userId}`,
+    { headers: authHeaders() }
+  );
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Failed to fetch insight feedback stats: ${res.status} ${text}`);
   }
   return res.json();
 }

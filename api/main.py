@@ -52,6 +52,7 @@ from api.schemas import (
     EventOut,
     EventPatchIn,
     InsightOut,
+    InsightFeedbackStatsOut,
     InsightRejectIn,
     InsightVerifyIn,
     InsightVerifyOut,
@@ -75,6 +76,7 @@ from ingestion.normalize_event import NormalizationError, normalize_event, norma
 
 from ml.insights import (
     list_event_insight_links,
+    list_insight_feedback_stats,
     list_insights,
     list_rag_sync_candidates,
     recompute_insights,
@@ -686,6 +688,16 @@ def get_insights(user_id: Optional[int] = None, include_suppressed: bool = True,
         authorization=authorization,
     )
     return list_insights(user_id=user_id, include_suppressed=include_suppressed)
+
+
+@app.get("/insights/feedback_stats", response_model=InsightFeedbackStatsOut)
+def get_insight_feedback_stats(user_id: Optional[int] = None, authorization: Optional[str] = Header(default=None)):
+    user_id = _resolve_request_user_id(
+        explicit_user_id=user_id,
+        authorization=authorization,
+    )
+    return list_insight_feedback_stats(user_id=user_id, surfaced_only=True)
+
 
 # list insights on corresponding events on timeline UI
 @app.get("/events/insight_links", response_model=list[EventInsightLinkOut])

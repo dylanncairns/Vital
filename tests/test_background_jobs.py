@@ -126,10 +126,10 @@ class BackgroundJobsTests(unittest.TestCase):
         self.assertIsNotNone(created)
 
         with (
-            patch("api.main.list_rag_sync_candidates", return_value=[{"item_id": 1, "symptom_id": 1, "ingredient_ids": set(), "routes": ["ingestion"], "lag_bucket_counts": {"6_24h": 1}}]),
-            patch("api.main.sync_claims_for_candidates", side_effect=[{"queries_built": 1, "papers_added": 0, "claims_added": 0}, {"queries_built": 1, "papers_added": 1, "claims_added": 1}]) as sync_mock,
-            patch("api.main.ingest_sources_for_candidates", return_value={"uploaded_count": 1, "source_files": ["x.txt"]}) as ingest_mock,
-            patch("api.main.recompute_insights", return_value={"candidates_considered": 1, "pairs_evaluated": 1, "insights_written": 1}),
+            patch("api.worker.job_processing.list_rag_sync_candidates", return_value=[{"item_id": 1, "symptom_id": 1, "ingredient_ids": set(), "routes": ["ingestion"], "lag_bucket_counts": {"6_24h": 1}}]),
+            patch("api.worker.job_processing.sync_claims_for_candidates", side_effect=[{"queries_built": 1, "papers_added": 0, "claims_added": 0}, {"queries_built": 1, "papers_added": 1, "claims_added": 1}]) as sync_mock,
+            patch("api.worker.job_processing.ingest_sources_for_candidates", return_value={"uploaded_count": 1, "source_files": ["x.txt"]}) as ingest_mock,
+            patch("api.worker.job_processing.recompute_insights", return_value={"candidates_considered": 1, "pairs_evaluated": 1, "insights_written": 1}),
         ):
             result = process_background_jobs_batch(ProcessJobsIn(limit=10, max_papers_per_query=1))
 
@@ -243,7 +243,7 @@ class BackgroundJobsTests(unittest.TestCase):
         self.assertIsNotNone(created)
 
         with patch(
-            "api.main.audit_claim_citations",
+            "api.worker.job_processing.audit_claim_citations",
             return_value={
                 "scanned_urls": 3,
                 "missing_urls": 1,

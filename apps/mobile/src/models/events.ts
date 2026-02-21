@@ -154,3 +154,11 @@ export type EventInsightLink = {
   event_id: number;
   insight_id: number;
 };
+
+export type InsightFeedbackStats = {
+  user_id: number;
+  verified_count: number;
+  rejected_count: number;
+  total_count: number;
+  surfaced_only: boolean;
+};
