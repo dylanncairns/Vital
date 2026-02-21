@@ -1,3 +1,5 @@
+# standardize base schemas for repeated payload patterns
+
 import os
 from typing import Optional
 

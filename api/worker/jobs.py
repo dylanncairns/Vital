@@ -96,11 +96,11 @@ def enqueue_background_job(
         if owns_connection:
             conn.close()
 
-
+# Recover stale ("pending") running jobs so a bad job does not occupy worker forever
 def list_pending_jobs(*, limit: int = 20) -> list[dict[str, Any]]:
     conn = get_connection()
     try:
-        # Recover stale running jobs so a crashed worker does not block processing forever.
+        # Label jobs running > 10 min with no update as pending
         conn.execute(
             """
             UPDATE background_jobs
@@ -111,7 +111,7 @@ def list_pending_jobs(*, limit: int = 20) -> list[dict[str, Any]]:
             """,
             (_now_iso(),),
         )
-
+        # Fetch now pending rows
         rows = conn.execute(
             """
             SELECT id, user_id, job_type, item_id, symptom_id, payload_json, status, attempts, updated_at
@@ -125,7 +125,7 @@ def list_pending_jobs(*, limit: int = 20) -> list[dict[str, Any]]:
 
         selected_rows = list(rows)
 
-        # Retry failed jobs automatically with bounded exponential backoff.
+        # Retry failed jobs automatically
         remaining = max(0, limit - len(selected_rows))
         if remaining > 0:
             failed_rows = conn.execute(
@@ -160,7 +160,7 @@ def list_pending_jobs(*, limit: int = 20) -> list[dict[str, Any]]:
 
         if not selected_rows:
             return []
-
+        
         job_ids = [int(row["id"]) for row in selected_rows]
         now_iso = _now_iso()
         with conn.cursor() as cursor:

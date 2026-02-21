@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 
 import api.db
-from ml.training_data import build_case_control_training_rows
+from ml.training.training_data import build_case_control_training_rows
 from tests.db_test_utils import reset_test_database
 
 

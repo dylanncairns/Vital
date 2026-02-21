@@ -331,3 +331,13 @@
 - fixed some SQL issues that were causing ci.yml int tests to fail
 - fix auth issue for test vs non test in main.py
 - patch guard which previously accepted an invalid auth header
+
+## Commit 45
+- remove old sqlite db
+
+## Commit 46
+- reorganize api repo and main.py
+    - outsourced some main logic to helper files to make it more readable 
+    - separated some job processing logic from main logic
+- annotated functionalities in api files
+- reorganized ml repo and moved training to its own section

@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import api.db
 from api.main import ProcessJobsIn, process_background_jobs_batch
-from api.repositories.jobs import (
+from api.worker.jobs import (
     DEFAULT_MAX_FAILED_ATTEMPTS,
     JOB_CITATION_AUDIT,
     JOB_EVIDENCE_ACQUIRE_CANDIDATE,

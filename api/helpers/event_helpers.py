@@ -3,7 +3,7 @@ from __future__ import annotations
 from psycopg import Error as DatabaseError
 
 from api.db import get_connection
-from api.repositories.jobs import (
+from api.worker.jobs import (
     JOB_RECOMPUTE_CANDIDATE,
     enqueue_background_job,
 )
@@ -109,7 +109,7 @@ def insert_event_and_expand(normalized: NormalizedEvent) -> int:
     finally:
         conn.close()
 
-
+# when event added, recompute opposite (symptom vs exposure) candidates with new entry info included
 def enqueue_impacted_recompute_jobs(normalized: NormalizedEvent) -> int:
     user_id = int(normalized["user_id"])
     jobs_added = 0

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 
-from ml.training_pipeline import run_training
+from ml.training.training_pipeline import run_training
 
 
 def main() -> None:

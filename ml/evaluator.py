@@ -13,9 +13,9 @@ try:
     import xgboost as xgb
 except Exception:
     xgb = None
-from sklearn.isotonic import IsotonicRegression
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import precision_recall_curve
+from ml.final_score import predict_final_score
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 MODELS_DIR = DATA_DIR / "models"
@@ -65,6 +65,7 @@ FEATURE_ORDER = [
     "time_confidence_score",
 ] + ROUTE_TEMPORAL_FEATURES
 
+# metrics for eval
 DEFAULT_XGBOOST_MODEL_PATH = MODELS_DIR / "model_artifact.xgb.json"
 DEFAULT_CURATED_TRAINING_PATH = MODELS_DIR / "curated_linkages.json"
 DEFAULT_CALIBRATOR_PATH = MODELS_DIR / "model_calibrator.pkl"
@@ -97,7 +98,6 @@ def _safe_int(value: Any, default: int = 0) -> int:
     except (TypeError, ValueError):
         return default
 
-
 def _safe_bool(value: Any) -> bool:
     if isinstance(value, bool):
         return value
@@ -114,7 +114,7 @@ def _stable_jitter(key: str, *, amplitude: float = 1.0) -> float:
     centered = (value * 2.0) - 1.0
     return centered * amplitude
 
-
+# data on per-user events pertaining to candidate
 def _joint_recurrence_metrics(
     *,
     cooccurrence_count: float,
@@ -127,7 +127,7 @@ def _joint_recurrence_metrics(
     unmatched_symptom = max(0.0, symptom_count_7d - cooccurrence_count)
     return joint_ratio, unmatched_exposure, unmatched_symptom
 
-
+# reference chunked evidence quality metrics
 def compute_evidence_quality(evidence: dict[str, Any]) -> dict[str, float]:
     citations = evidence.get("citations") or []
     citation_count = len(citations)
@@ -207,7 +207,7 @@ def compute_evidence_quality(evidence: dict[str, Any]) -> dict[str, float]:
         "llm_confidence": llm_confidence,
     }
 
-
+# penalty score for metrics that can degrade confidence 
 def compute_penalty_score(feature_map: dict[str, float]) -> float:
     cooccurrence_count = max(0.0, _safe_float(feature_map.get("cooccurrence_count")))
     exposure_count_7d = max(0.0, _safe_float(feature_map.get("exposure_count_7d")))
@@ -248,11 +248,8 @@ def compute_penalty_score(feature_map: dict[str, float]) -> float:
         0.75,
     )
 
-# final returned score
+# final returned score - backward-compatible wrapper around the dedicated fusion scorer
 def combine_scores(*, model_probability: float, evidence_quality: float, penalty_score: float) -> float:
-    # Backward-compatible wrapper around the dedicated fusion scorer.
-    from ml.final_score import predict_final_score
-
     return predict_final_score(
         model_probability=model_probability,
         evidence_quality=evidence_quality,

@@ -5,6 +5,7 @@ import hmac
 import os
 import secrets
 from datetime import datetime, timedelta, timezone
+from typing import Optional
 
 from api.db import get_connection
 
@@ -18,7 +19,7 @@ def _now() -> datetime:
 def _now_iso() -> str:
     return _now().isoformat()
 
-
+# hash user passwords with pbkdf2 encryption - verify with same algo
 def _hash_password(password: str, *, salt: bytes | None = None) -> str:
     if salt is None:
         salt = os.urandom(16)
@@ -26,7 +27,7 @@ def _hash_password(password: str, *, salt: bytes | None = None) -> str:
     digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, rounds)
     return f"pbkdf2_sha256${rounds}${salt.hex()}${digest.hex()}"
 
-
+# password verification
 def verify_password(password: str, password_hash: str | None) -> bool:
     if not password_hash:
         return False
@@ -42,7 +43,7 @@ def verify_password(password: str, password_hash: str | None) -> bool:
     computed = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, rounds)
     return hmac.compare_digest(computed, expected)
 
-
+# validation and creation of new users
 def create_user(*, username: str, password: str, name: str | None = None) -> dict:
     uname = username.strip().lower()
     if not uname or len(uname) < 3:
@@ -71,7 +72,7 @@ def create_user(*, username: str, password: str, name: str | None = None) -> dic
     finally:
         conn.close()
 
-
+# log authenticated sessions
 def _create_session(*, user_id: int) -> str:
     token = secrets.token_urlsafe(48)
     now = _now()
@@ -90,7 +91,7 @@ def _create_session(*, user_id: int) -> str:
     finally:
         conn.close()
 
-
+# login validation against sitting user DB
 def login_user(*, username: str, password: str) -> dict | None:
     uname = username.strip().lower()
     conn = get_connection()
@@ -111,7 +112,21 @@ def login_user(*, username: str, password: str) -> dict | None:
         "user": {"id": int(row["id"]), "username": row["username"], "name": row["name"]},
     }
 
+# for main token auth validation - extract user (bearer) token from auth header
+def extract_bearer_token(authorization: Optional[str]) -> Optional[str]:
+    if authorization is None:
+        return None
+    if not isinstance(authorization, str):
+        return None
+    value = authorization.strip()
+    if not value:
+        return None
+    if value.lower().startswith("bearer "):
+        token = value[7:].strip()
+        return token or None
+    return None
 
+# verify user_id against token
 def resolve_user_from_token(token: str | None) -> dict | None:
     if not token:
         return None

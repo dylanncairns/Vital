@@ -76,6 +76,7 @@
 - Random bearer session tokens with expiry and revocation
 - Token to user mismatch protection
 - Parameterized SQL queries across repositories
+- [auth.py](api/auth.py)
 
 
 ## Tests
@@ -108,7 +109,6 @@
 - Voice-to-text event logging
 - Better brand-specific item-ingredients expansion
 - Improved model computation
-- Operational endpoint protection
 - Admin and user role separation
 - Publication!
 - Long term vision includes integration of bloodwork, wearable data, and genetic sequencing

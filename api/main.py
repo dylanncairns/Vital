@@ -8,27 +8,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from psycopg import Error as DatabaseError
 
 from api.db import get_connection, initialize_database
-from api.repositories.events import list_events
-from api.repositories.auth import (
+from api.auth import (
     create_user,
     delete_user_account,
     login_user,
     resolve_user_from_token,
     revoke_session,
+    extract_bearer_token,
 )
-from api.repositories.jobs import (
-    JOB_CITATION_AUDIT,
-    JOB_EVIDENCE_ACQUIRE_CANDIDATE,
-    JOB_MODEL_RETRAIN,
-    JOB_RECOMPUTE_CANDIDATE,
-    enqueue_background_job,
-    list_pending_jobs,
-    mark_model_retrain_completed,
-    mark_job_done,
-    mark_job_failed,
-    maybe_enqueue_model_retrain,
-)
-from api.event_helpers import (
+from api.helpers.events import list_events
+from api.helpers.raw_event_ingest import insert_raw_event_ingest
+from api.helpers.event_helpers import (
     enqueue_impacted_recompute_jobs,
     enqueue_recompute_jobs_for_items,
     enqueue_recompute_jobs_for_symptoms,
@@ -36,6 +26,17 @@ from api.event_helpers import (
     insert_event_and_expand,
     normalize_patch_time_value,
 )
+from api.helpers.resolve import resolve_item_id, resolve_symptom_id
+from api.helpers.recurring import (
+    create_recurring_rule,
+    delete_recurring_rule,
+    list_recurring_rules,
+    materialize_recurring_exposures,
+    update_recurring_rule,
+)
+from api.worker.jobs import JOB_CITATION_AUDIT, enqueue_background_job, maybe_enqueue_model_retrain
+from api.worker.job_processing import process_background_jobs_batch
+from api.worker.citation_audit import audit_claim_citations
 from api.schemas import (
     AuthLoginIn,
     AuthMePatchIn,
@@ -67,23 +68,11 @@ from api.schemas import (
     TextIngestOut,
     TimelineEvent,
 )
-from ml.citation_audit import audit_claim_citations
-from api.repositories.raw_event_ingest import insert_raw_event_ingest
-from api.repositories.resolve import resolve_item_id, resolve_symptom_id
-from api.repositories.recurring import (
-    create_recurring_rule,
-    delete_recurring_rule,
-    list_recurring_rules,
-    materialize_recurring_exposures,
-    update_recurring_rule,
-)
+
 from ingestion.expand_exposure import expand_exposure_event
 from ingestion.ingest_text import ingest_text_event
-from ingestion.normalize_event import (
-    NormalizationError,
-    normalize_event,
-    normalize_route,
-)
+from ingestion.normalize_event import NormalizationError, normalize_event, normalize_route
+
 from ml.insights import (
     list_event_insight_links,
     list_insights,
@@ -98,32 +87,33 @@ from ml.rag import (
     fetch_symptom_name_map,
     sync_claims_for_candidates,
 )
-from ml.vector_ingest import ingest_sources_for_candidates
-from ml.training_pipeline import run_training
 
-
+# on startup, initialize database
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     _ = app
     initialize_database()
     yield
 
-
 app = FastAPI(
     title="Vital API",
     version="0.1.0",
     lifespan=_lifespan,
 )
+
 logger = logging.getLogger(__name__)
 
-
+# wrapper on enqueue_model_retrain so mutation endpoints (verify/reject insights) always succeed
+# if retrain in background fails, exception is logged and main API actions are not broken
 def _maybe_enqueue_model_retrain_safe(*, trigger_user_id: int) -> None:
     try:
         maybe_enqueue_model_retrain(trigger_user_id=trigger_user_id)
     except Exception:
-        # Mutations should succeed even if background retrain enqueue fails.
+        # Mutation attempt should not except as a full failure even if background retrain enqueue fails
         logger.exception("Model retrain enqueue failed", extra={"trigger_user_id": int(trigger_user_id)})
 
+# config env var "CORS_ALLOW_ORIGINS" if set and if not then valid requests must pass through local list
+# checks incoming origin header and decides if endpoint access should be allowed
 def _cors_allow_origins() -> list[str]:
     configured = os.getenv("CORS_ALLOW_ORIGINS", "")
     if configured.strip():
@@ -137,6 +127,7 @@ def _cors_allow_origins() -> list[str]:
 
 _cors_allow_origin_regex = os.getenv("CORS_ALLOW_ORIGIN_REGEX", "").strip() or r"^https://.*\.vercel\.app$"
 
+# intercepts all requests and runs above CORS logic to validate origin before request hits any endpoint route
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_allow_origins(),
@@ -146,35 +137,22 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
-def _extract_bearer_token(authorization: Optional[str]) -> Optional[str]:
-    if authorization is None:
-        return None
-    if not isinstance(authorization, str):
-        return None
-    value = authorization.strip()
-    if not value:
-        return None
-    if value.lower().startswith("bearer "):
-        token = value[7:].strip()
-        return token or None
-    return None
-
-
+# extracts user token, looks it up, if valid then return user_id as authenticated
+# if route passes explicit user_id, it is validated against token
 def _resolve_request_user_id(
     *,
     explicit_user_id: Optional[int],
     authorization: Optional[str],
 ) -> int:
-    token = _extract_bearer_token(authorization)
+    token = extract_bearer_token(authorization)
     auth_user = resolve_user_from_token(token) if token else None
     if auth_user:
         auth_user_id = int(auth_user["id"])
         if explicit_user_id is not None and int(explicit_user_id) != auth_user_id:
             raise HTTPException(status_code=403, detail="user_id does not match auth token")
         return auth_user_id
-    # Allow direct function invocation in tests when no auth header was actually provided.
-    # FastAPI dependency defaults (e.g., Header(...)) are non-string sentinel objects.
+    
+    # Allow direct function calls for tests where no auth header is provided
     if (
         explicit_user_id is not None
         and (authorization is None or not isinstance(authorization, str))
@@ -206,13 +184,13 @@ def login_auth(payload: AuthLoginIn):
 
 @app.post("/auth/logout")
 def logout_auth(authorization: Optional[str] = Header(default=None)):
-    revoke_session(_extract_bearer_token(authorization))
+    revoke_session(extract_bearer_token(authorization))
     return {"status": "ok"}
 
 
 @app.get("/auth/me", response_model=AuthUserOut)
 def auth_me(authorization: Optional[str] = Header(default=None)):
-    token = _extract_bearer_token(authorization)
+    token = extract_bearer_token(authorization)
     auth_user = resolve_user_from_token(token)
     if auth_user is None:
         raise HTTPException(status_code=401, detail="Authentication required")
@@ -225,7 +203,7 @@ def auth_me(authorization: Optional[str] = Header(default=None)):
 
 @app.patch("/auth/me", response_model=AuthUserOut)
 def auth_me_patch(payload: AuthMePatchIn, authorization: Optional[str] = Header(default=None)):
-    token = _extract_bearer_token(authorization)
+    token = extract_bearer_token(authorization)
     auth_user = resolve_user_from_token(token)
     if auth_user is None:
         raise HTTPException(status_code=401, detail="Authentication required")
@@ -250,7 +228,7 @@ def auth_me_patch(payload: AuthMePatchIn, authorization: Optional[str] = Header(
 
 @app.delete("/auth/me")
 def auth_me_delete(authorization: Optional[str] = Header(default=None)):
-    token = _extract_bearer_token(authorization)
+    token = extract_bearer_token(authorization)
     auth_user = resolve_user_from_token(token)
     if auth_user is None:
         raise HTTPException(status_code=401, detail="Authentication required")
@@ -289,7 +267,7 @@ def create_event(payload: EventIn, authorization: Optional[str] = Header(default
     _maybe_enqueue_model_retrain_safe(trigger_user_id=int(normalized["user_id"]))
     return event_response(created_id, normalized)
 
-
+# user edits/updates an event on timeline
 @app.patch("/events/{event_type}/{event_id}", response_model=EventMutationOut)
 def patch_event(
     event_type: str,
@@ -432,7 +410,7 @@ def patch_event(
     finally:
         conn.close()
 
-
+# user deletes an event from timeline
 @app.delete("/events/{event_type}/{event_id}", response_model=EventMutationOut)
 def delete_event(
     event_type: str,
@@ -485,7 +463,8 @@ def delete_event(
     finally:
         conn.close()
 
-
+# get/events generates new logged events of reccuring exposures
+# get/reccurring_exposures returns recurring exp rules
 @app.get("/recurring_exposures", response_model=list[RecurringExposureRuleOut])
 def get_recurring_exposures(user_id: Optional[int] = None, authorization: Optional[str] = Header(default=None)):
     user_id = _resolve_request_user_id(
@@ -494,7 +473,7 @@ def get_recurring_exposures(user_id: Optional[int] = None, authorization: Option
     )
     return list_recurring_rules(int(user_id))
 
-
+# creates a recurring exp rule
 @app.post("/recurring_exposures", response_model=RecurringExposureRuleOut)
 def create_recurring_exposure(payload: RecurringExposureRuleIn, authorization: Optional[str] = Header(default=None)):
     user_id = _resolve_request_user_id(
@@ -526,7 +505,7 @@ def create_recurring_exposure(payload: RecurringExposureRuleIn, authorization: O
             return row
     raise HTTPException(status_code=500, detail="failed to create recurring rule")
 
-
+# edits a reccuring exp rule
 @app.patch("/recurring_exposures/{rule_id}", response_model=RecurringExposureRuleOut)
 def patch_recurring_exposure(
     rule_id: int,
@@ -563,7 +542,7 @@ def patch_recurring_exposure(
             return row
     raise HTTPException(status_code=404, detail="rule not found")
 
-
+# deletes a recurring exp rule
 @app.delete("/recurring_exposures/{rule_id}")
 def remove_recurring_exposure(rule_id: int, user_id: Optional[int] = None, authorization: Optional[str] = Header(default=None)):
     user_id = _resolve_request_user_id(
@@ -619,7 +598,8 @@ def recompute_user_insights(payload: RecomputeInsightsIn, authorization: Optiona
         **result,
     }
 
-
+# retrieve evidence from DB pertaining to candidate linkage from list_rag_sync
+# reads existing evidence and ingests new evidence online if needed
 @app.post("/rag/sync", response_model=RagSyncOut)
 def sync_rag_evidence(payload: RagSyncIn, authorization: Optional[str] = Header(default=None)):
     user_id = _resolve_request_user_id(
@@ -651,7 +631,7 @@ def sync_rag_evidence(payload: RagSyncIn, authorization: Optional[str] = Header(
         **result,
     }
 
-
+# audit and delete stored evidence where web search on evidence provenance does not return matching citation
 @app.post("/citations/audit", response_model=CitationAuditOut)
 def audit_citations(payload: CitationAuditIn, authorization: Optional[str] = Header(default=None)):
     _resolve_request_user_id(
@@ -673,7 +653,7 @@ def audit_citations(payload: CitationAuditIn, authorization: Optional[str] = Hea
         conn.close()
     return {"status": "ok", **result}
 
-
+# citation audit job queueing
 @app.post("/citations/audit/enqueue", response_model=CitationAuditEnqueueOut)
 def enqueue_citation_audit(payload: CitationAuditIn, authorization: Optional[str] = Header(default=None)):
     enqueue_user_id = _resolve_request_user_id(
@@ -689,148 +669,7 @@ def enqueue_citation_audit(payload: CitationAuditIn, authorization: Optional[str
     )
     return {"status": "ok", "job_id": job_id}
 
-
-def process_background_jobs_batch(payload: ProcessJobsIn):
-    jobs = list_pending_jobs(limit=payload.limit)
-    jobs_done = 0
-    jobs_failed = 0
-    recompute_jobs_done = 0
-    evidence_jobs_done = 0
-    model_retrain_jobs_done = 0
-    citation_audit_jobs_done = 0
-
-    for job in jobs:
-        job_id = int(job["id"])
-        user_id = int(job["user_id"])
-        item_id = job.get("item_id")
-        symptom_id = job.get("symptom_id")
-        try:
-            if job["job_type"] == JOB_RECOMPUTE_CANDIDATE:
-                if item_id is None or symptom_id is None:
-                    raise ValueError("recompute job missing item_id or symptom_id")
-                recompute_insights(user_id, target_pairs={(int(item_id), int(symptom_id))})
-                recompute_jobs_done += 1
-
-                conn = get_connection()
-                try:
-                    row = conn.execute(
-                        """
-                        SELECT evidence_strength_score
-                        FROM insights
-                        WHERE user_id = %s AND item_id = %s AND symptom_id = %s
-                        ORDER BY id DESC
-                        LIMIT 1
-                        """,
-                        (user_id, int(item_id), int(symptom_id)),
-                    ).fetchone()
-                finally:
-                    conn.close()
-
-                evidence_strength = float(row["evidence_strength_score"]) if row and row["evidence_strength_score"] is not None else 0.0
-                if evidence_strength <= 0.0:
-                    enqueue_background_job(
-                        user_id=user_id,
-                        job_type=JOB_EVIDENCE_ACQUIRE_CANDIDATE,
-                        item_id=int(item_id),
-                        symptom_id=int(symptom_id),
-                        payload={"trigger": "insufficient_evidence"},
-                    )
-
-            elif job["job_type"] == JOB_EVIDENCE_ACQUIRE_CANDIDATE:
-                if item_id is None or symptom_id is None:
-                    raise ValueError("evidence job missing item_id or symptom_id")
-                candidates = [
-                    candidate
-                    for candidate in list_rag_sync_candidates(user_id)
-                    if int(candidate["item_id"]) == int(item_id) and int(candidate["symptom_id"]) == int(symptom_id)
-                ]
-                if candidates:
-                    conn = get_connection()
-                    try:
-                        sync_result = sync_claims_for_candidates(
-                            conn,
-                            candidates=candidates,
-                            ingredient_name_map=fetch_ingredient_name_map(conn),
-                            symptom_name_map=fetch_symptom_name_map(conn),
-                            item_name_map=fetch_item_name_map(conn),
-                            online_enabled=True,
-                            max_papers_per_query=payload.max_papers_per_query,
-                        )
-                        conn.commit()
-                    except DatabaseError:
-                        conn.rollback()
-                        raise
-                    finally:
-                        conn.close()
-
-                    if int(sync_result.get("claims_added", 0)) == 0:
-                        ingest_sources_for_candidates(
-                            candidates=candidates,
-                            vector_store_id=os.getenv("RAG_VECTOR_STORE_ID"),
-                            max_queries=6,
-                            max_papers_per_query=max(8, payload.max_papers_per_query),
-                        )
-                        conn_retry = get_connection()
-                        try:
-                            sync_claims_for_candidates(
-                                conn_retry,
-                                candidates=candidates,
-                                ingredient_name_map=fetch_ingredient_name_map(conn_retry),
-                                symptom_name_map=fetch_symptom_name_map(conn_retry),
-                                item_name_map=fetch_item_name_map(conn_retry),
-                                online_enabled=True,
-                                max_papers_per_query=max(8, payload.max_papers_per_query),
-                            )
-                            conn_retry.commit()
-                        except DatabaseError:
-                            conn_retry.rollback()
-                            raise
-                        finally:
-                            conn_retry.close()
-                recompute_insights(user_id, target_pairs={(int(item_id), int(symptom_id))})
-                evidence_jobs_done += 1
-            elif job["job_type"] == JOB_MODEL_RETRAIN:
-                run_training(dataset_source=os.getenv("MODEL_RETRAIN_DATASET_SOURCE", "hybrid"))
-                mark_model_retrain_completed()
-                model_retrain_jobs_done += 1
-            elif job["job_type"] == JOB_CITATION_AUDIT:
-                limit = int(job.get("payload", {}).get("limit", 300) or 300)
-                delete_missing = bool(job.get("payload", {}).get("delete_missing", True))
-                conn = get_connection()
-                try:
-                    audit_claim_citations(
-                        conn,
-                        limit=max(1, min(limit, 5000)),
-                        delete_missing=delete_missing,
-                    )
-                    conn.commit()
-                except DatabaseError:
-                    conn.rollback()
-                    raise
-                finally:
-                    conn.close()
-                citation_audit_jobs_done += 1
-            else:
-                raise ValueError(f"unknown job_type {job['job_type']}")
-
-            mark_job_done(job_id)
-            jobs_done += 1
-        except Exception as exc:
-            mark_job_failed(job_id, str(exc))
-            jobs_failed += 1
-
-    return {
-        "status": "ok",
-        "jobs_claimed": len(jobs),
-        "jobs_done": jobs_done,
-        "jobs_failed": jobs_failed,
-        "recompute_jobs_done": recompute_jobs_done,
-        "evidence_jobs_done": evidence_jobs_done,
-        "model_retrain_jobs_done": model_retrain_jobs_done,
-        "citation_audit_jobs_done": citation_audit_jobs_done,
-    }
-
-
+# background job processing endpoint for worker
 @app.post("/jobs/process", response_model=ProcessJobsOut)
 def process_background_jobs(payload: ProcessJobsIn, authorization: Optional[str] = Header(default=None)):
     _resolve_request_user_id(
@@ -848,7 +687,7 @@ def get_insights(user_id: Optional[int] = None, include_suppressed: bool = True,
     )
     return list_insights(user_id=user_id, include_suppressed=include_suppressed)
 
-
+# list insights on corresponding events on timeline UI
 @app.get("/events/insight_links", response_model=list[EventInsightLinkOut])
 def get_event_insight_links(user_id: Optional[int] = None, supported_only: bool = True, authorization: Optional[str] = Header(default=None)):
     user_id = _resolve_request_user_id(
@@ -857,7 +696,7 @@ def get_event_insight_links(user_id: Optional[int] = None, supported_only: bool 
     )
     return list_event_insight_links(user_id=user_id, supported_only=supported_only)
 
-
+# user verifies insight
 @app.post("/insights/{insight_id}/verify", response_model=InsightVerifyOut)
 def verify_insight(insight_id: int, payload: InsightVerifyIn, authorization: Optional[str] = Header(default=None)):
     user_id = _resolve_request_user_id(
@@ -877,7 +716,7 @@ def verify_insight(insight_id: int, payload: InsightVerifyIn, authorization: Opt
             raise HTTPException(status_code=404, detail="Insight not found")
         raise
 
-
+# user rejects insight
 @app.post("/insights/{insight_id}/reject", response_model=InsightVerifyOut)
 def reject_insight(insight_id: int, payload: InsightRejectIn, authorization: Optional[str] = Header(default=None)):
     user_id = _resolve_request_user_id(

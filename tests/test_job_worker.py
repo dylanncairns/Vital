@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 
 import api.db
-from api.job_worker import run_once
+from api.worker.job_worker import run_once
 from tests.db_test_utils import reset_test_database
 
 

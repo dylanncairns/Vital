@@ -11,16 +11,16 @@ from datetime import datetime, timedelta, timezone
 from urllib import error, request
 
 from api.db import get_connection
-from api.repositories.jobs import (
+from api.worker.jobs import (
     JOB_RECOMPUTE_CANDIDATE,
     enqueue_background_job,
     maybe_enqueue_model_retrain,
 )
-from api.repositories.raw_event_ingest import insert_raw_event_ingest
+from api.helpers.raw_event_ingest import insert_raw_event_ingest
 from ingestion.expand_exposure import expand_exposure_event
 from ingestion.normalize_event import normalize_route
 from ingestion.time_utils import to_utc_iso
-from api.repositories.resolve import resolve_item_id, resolve_symptom_id
+from api.helpers.resolve import resolve_item_id, resolve_symptom_id
 
 # normalized complete parse result to log for ingested input
 @dataclass

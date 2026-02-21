@@ -8,7 +8,7 @@ import re
 from datetime import datetime, timezone
 from typing import Protocol, TypedDict
 
-from api.repositories.resolve import resolve_item_id, resolve_symptom_id
+from api.helpers.resolve import resolve_item_id, resolve_symptom_id
 from ingestion.time_utils import to_utc_iso
 
 # lets main catch specific validation failures and separates from DB/runtime errors

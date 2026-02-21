@@ -37,7 +37,7 @@ from ml.final_score import (
     should_promote_fusion,
     train_fusion_model,
 )
-from ml.training_data import build_case_control_training_rows
+from ml.training.training_data import build_case_control_training_rows
 from sklearn.model_selection import GroupShuffleSplit
 from sklearn.model_selection import train_test_split
 

@@ -6,13 +6,13 @@ import time
 from api.main import process_background_jobs_batch
 from api.schemas import ProcessJobsIn
 
-
+# admin function to clear queue / process all jobs
 def run_once(*, limit: int = 20, max_papers_per_query: int = 8) -> dict:
     return process_background_jobs_batch(
         ProcessJobsIn(limit=limit, max_papers_per_query=max_papers_per_query)
     )
 
-
+# deployment function - calls run_once for a batch of jobs every interval
 def run_forever(
     *,
     limit: int = 20,
@@ -30,7 +30,7 @@ def run_forever(
         else:
             time.sleep(interval_seconds)
 
-
+# report jobs that a batch processed
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run background jobs worker for insights/evidence.")
     parser.add_argument("--once", action="store_true", help="Process one batch and exit")
@@ -44,6 +44,7 @@ def main() -> None:
         print(run_once(limit=args.limit, max_papers_per_query=args.max_papers_per_query))
         return
 
+    # initialze worker parameters in background worker start command
     run_forever(
         limit=args.limit,
         max_papers_per_query=args.max_papers_per_query,

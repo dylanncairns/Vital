@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 
 import api.db
-from ml.citation_audit import audit_claim_citations
+from api.worker.citation_audit import audit_claim_citations
 from tests.db_test_utils import reset_test_database
 
 

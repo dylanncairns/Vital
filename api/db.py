@@ -8,6 +8,8 @@ from psycopg.rows import dict_row
 
 SCHEMA_PATH = Path(__file__).resolve().parent.parent / "data" / "schema.sql"
 
+
+# temp-db for tests require test env and safe test db url
 _TEST_DB_ALLOWED_HOSTS = {
     "localhost",
     "127.0.0.1",
@@ -15,10 +17,8 @@ _TEST_DB_ALLOWED_HOSTS = {
     "",
 }
 
-
 def _is_test_environment() -> bool:
     return bool(os.getenv("PYTEST_CURRENT_TEST")) or os.getenv("APP_ENV", "").strip().lower() == "test"
-
 
 def _assert_safe_test_database_url(database_url: str) -> None:
     if not _is_test_environment():
@@ -38,6 +38,7 @@ def _assert_safe_test_database_url(database_url: str) -> None:
         )
 
 
+# needs safe db url to connect
 def assert_test_database_safety() -> None:
     database_url = os.getenv("DATABASE_URL", "").strip()
     if not database_url:
@@ -103,6 +104,8 @@ def _column_data_type(conn: Connection, table_name: str, column_name: str) -> st
         return None
     return str(row["data_type"]).lower()
 
+# migrations allow versioning of DB and prevent schema changes from breaking DB functionality
+
 # prepare for rag evidence/citation retrival
 def _migration_001_insight_and_rag_scaffolding(conn: Connection) -> None:
     # Expand insights for decision transparency and API payloads
@@ -119,7 +122,7 @@ def _migration_001_insight_and_rag_scaffolding(conn: Connection) -> None:
         if not _column_exists(conn, "insights", column_name):
             conn.execute(f"ALTER TABLE insights ADD COLUMN {column_name} {column_type}")
 
-    # Expand claims so a claim can hold chunk and citation metadata directly
+    # expand claims db so each claim can hold chunk and citation metadata directly
     claim_columns = [
         ("claim_type", "TEXT"),
         ("chunk_index", "INTEGER"),
