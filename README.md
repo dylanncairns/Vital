@@ -18,7 +18,7 @@
 - Install Python dependencies: `pip install -r requirements.txt`
 - Terminal 1 (from repo root): `uvicorn api.main:app --reload`
 - Terminal 2 (from apps/mobile or apps/web): `npm install && npm start`
-- Terminal 3 (from repo root): `python3 -m api.job_worker --limit 100 --max-papers-per-query 5`
+- Terminal 3 (from repo root): `python3 -m api.worker.job_worker --limit 100 --max-papers-per-query 5`
 
 - Quick tests (no DB required, default): `PYTHONPATH=. pytest -q`
 - Full tests (includes DB integration tests):
@@ -64,7 +64,7 @@
     - Evidence quality score (q) is computed with aggregated features from RAG
     - Penalty score is computed (p) for lack of info, low co-occurence count, high pair density to address confounding variables, low timestamp delta confidence, contradictory citations
     - Final score is computed by fusion logistic regression model that receives metrics that involve E, P, q, p
-- [Background Worker](api/job_worker.py)
+- [Background Worker](api/worker/job_worker.py)
     - recompute_candidate job queued to recompute insight metrics for a specific user/symptom/item group
     - evidence_acquire_candidate job queued when trying to retrieve evidence for candidate via OpenAI API vector search and if none returned then retrieving new evidence via OpenAI web search, heavily interacting with rag.py
     - model_retrain job queued when number of total events for a user hits trigger 

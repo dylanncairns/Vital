@@ -352,3 +352,6 @@
         - tab navitaion refreshes metric
     - added unit test to verify user scoping and zero state if stats fetch fails (doesnt break page)
 - fixed some int tests that were messed up by repo reorganization
+
+## Commit 50
+- update runbook worker commands
