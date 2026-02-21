@@ -1,8 +1,9 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Alert, Pressable, Text, TextInput, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { useFocusEffect } from "@react-navigation/native";
 
-import { fetchInsightFeedbackStats } from "../api/client";
+import { fetchInsightFeedbackStats, fetchInsights } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 
 const FONT_SEMIBOLD = "Exo2-SemiBold";
@@ -18,27 +19,37 @@ export default function AccountScreen() {
 
   const username = useMemo(() => user?.username ?? "", [user]);
 
-  useEffect(() => {
-    let cancelled = false;
-    async function loadFeedbackStats() {
-      if (!user?.id) {
-        if (!cancelled) setFeedbackCount(0);
-        return;
-      }
+  const loadFeedbackStats = React.useCallback(async () => {
+    if (!user?.id) {
+      setFeedbackCount(0);
+      return;
+    }
+    try {
+      const stats = await fetchInsightFeedbackStats(user.id);
+      setFeedbackCount(Number(stats.total_count || 0));
+    } catch {
       try {
-        const stats = await fetchInsightFeedbackStats(user.id);
-        if (!cancelled) {
-          setFeedbackCount(Number(stats.total_count || 0));
-        }
+        const insights = await fetchInsights(user.id, false);
+        const fallbackCount = insights.reduce((acc, row) => {
+          if (row.user_verified || row.user_rejected) return acc + 1;
+          return acc;
+        }, 0);
+        setFeedbackCount(fallbackCount);
       } catch {
-        if (!cancelled) setFeedbackCount(0);
+        setFeedbackCount(0);
       }
     }
-    void loadFeedbackStats();
-    return () => {
-      cancelled = true;
-    };
   }, [user?.id]);
+
+  useEffect(() => {
+    void loadFeedbackStats();
+  }, [loadFeedbackStats]);
+
+  useFocusEffect(
+    React.useCallback(() => {
+      void loadFeedbackStats();
+    }, [loadFeedbackStats])
+  );
 
   async function confirmAction(title: string, message: string): Promise<boolean> {
     if (typeof window !== "undefined" && typeof window.confirm === "function") {
@@ -183,7 +194,16 @@ export default function AccountScreen() {
         >
           <Text style={{ color: "#8C92A6", fontFamily: "Exo2-Regular", fontSize: 12 }}>Delete account</Text>
         </Pressable>
-        <Text style={{ color: "#5C6784", fontFamily: "Exo2-Regular", fontSize: 12, textAlign: "center", lineHeight: 18 }}>
+        <Text
+          style={{
+            marginTop: 18,
+            color: "#343A52",
+            fontFamily: "Exo2-Regular",
+            fontSize: 14,
+            textAlign: "center",
+            lineHeight: 21,
+          }}
+        >
           {"You've "}
           <Text style={{ color: "#1C8D57", fontFamily: FONT_SEMIBOLD }}>verified</Text>
           {" and "}
