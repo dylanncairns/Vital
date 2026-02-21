@@ -7,12 +7,12 @@ uvicorn api.main:app --reload
 
 ## Run Worker (Continuous)
 ```bash
-python3 -m api.job_worker --limit 100 --max-papers-per-query 5
+python3 -m api.worker.job_worker --limit 100 --max-papers-per-query 5
 ```
 
 ## Run Worker (One Batch)
 ```bash
-python3 -m api.job_worker --once --limit 100 --max-papers-per-query 5
+python3 -m api.worker.job_worker --once --limit 100 --max-papers-per-query 5
 ```
 
 ## Recompute Insights (One User - Replace user_id with user's id)
@@ -41,7 +41,7 @@ curl -X POST "http://127.0.0.1:8000/rag/sync" \
 
 ## Process Background Jobs (Internal Worker Invocation)
 ```bash
-python3 -m api.job_worker --once --limit 100 --max-papers-per-query 5
+python3 -m api.worker.job_worker --once --limit 100 --max-papers-per-query 5
 ```
 
 ## Citation Audit (Run Immediately)
