@@ -75,6 +75,7 @@ _TIME_AT_RE = re.compile(
     r"(?:\b(?:at|around|about|by)\s+|@)(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b",
     re.I,
 )
+_MIDNIGHT_RE = re.compile(r"\b(?:at|around|about|by)?\s*midnight\b", re.I)
 _TIME_RANGE_RE = re.compile(
     r"\b(?:from\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*[-–to]+\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b",
     re.I,
@@ -83,6 +84,7 @@ _RELATIVE_RE = re.compile(
     r"\b("
     r"yesterday morning|yesterday afternoon|yesterday evening|yesterday night|"
     r"yesterday breakfast|yesterday lunch|yesterday dinner|"
+    r"next morning|next afternoon|next evening|next night|next day|"
     r"this morning|this afternoon|this evening|this night|"
     r"this breakfast|this lunch|this dinner|"
     r"last night|for the night|tonight|today|yesterday|this week|last week|"
@@ -134,6 +136,7 @@ _DATE_TOKEN_RE = re.compile(
     r"\d{1,2}/\d{1,2}(?:/\d{2,4})?|"
     r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
     r"today|yesterday|last night|for the night|tonight|this morning|this afternoon|this evening|this week|last week|"
+    r"next morning|next afternoon|next evening|next night|next day|"
     r"breakfast|lunch|dinner|this breakfast|this lunch|this dinner|"
     r"yesterday breakfast|yesterday lunch|yesterday dinner"
     r")\b",
@@ -143,6 +146,7 @@ _STRONG_RELATIVE_DATE_RE = re.compile(
     r"\b("
     r"today|yesterday|last night|for the night|tonight|this week|last week|"
     r"this morning|this afternoon|this evening|this night|"
+    r"next morning|next afternoon|next evening|next night|next day|"
     r"yesterday morning|yesterday afternoon|yesterday evening|yesterday night|"
     r"yesterday breakfast|yesterday lunch|yesterday dinner"
     r")\b",
@@ -268,7 +272,7 @@ _ABS_MONTH_DATE_RE = re.compile(
     r")\b",
     re.I,
 )
-_ANAPHORIC_DAYPART_RE = re.compile(r"\bthat\s+(morning|afternoon|evening|night|day)\b", re.I)
+_ANAPHORIC_DAYPART_RE = re.compile(r"\b(that|next)\s+(morning|afternoon|evening|night|day)\b", re.I)
 _NOW_RE = re.compile(r"\b(right now|just now|now)\b", re.I)
 _EARLIER_TODAY_RE = re.compile(r"\bearlier today\b", re.I)
 _LATER_TODAY_RE = re.compile(r"\blater today\b", re.I)
@@ -320,7 +324,9 @@ def _resolve_anaphoric_daypart_time(
         return None
     tz = local_tz or _LOCAL_TZ
     anchor_local = anchor.astimezone(tz)
-    resolved_local = _apply_daypart_to_base(anchor_local, match.group(1))
+    if (match.group(1) or "").lower() == "next":
+        anchor_local = anchor_local + timedelta(days=1)
+    resolved_local = _apply_daypart_to_base(anchor_local, match.group(2))
     return resolved_local.astimezone(timezone.utc).isoformat()
 
 
@@ -503,6 +509,8 @@ def _parse_time(text: str, *, local_tz=None) -> tuple[str | None, str | None, st
             token = rel.group(1).lower()
             if token.startswith("yesterday") or token == "last night" or token == "yesterday":
                 base = now - timedelta(days=1)
+            elif token.startswith("next "):
+                base = now + timedelta(days=1)
         start_ts = base.replace(hour=shour % 24, minute=sminute, second=0, microsecond=0)
         end_ts = base.replace(hour=ehour % 24, minute=eminute, second=0, microsecond=0)
         if end_ts < start_ts:
@@ -530,7 +538,23 @@ def _parse_time(text: str, *, local_tz=None) -> tuple[str | None, str | None, st
             token = rel.group(1).lower()
             if token.startswith("yesterday") or token == "last night" or token == "yesterday":
                 base = now - timedelta(days=1)
+            elif token.startswith("next "):
+                base = now + timedelta(days=1)
         ts = base.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        return ts.astimezone(timezone.utc).isoformat(), None, None
+
+    if _MIDNIGHT_RE.search(text):
+        base = absolute_date or now
+        if days_ago is not None:
+            base = now - timedelta(days=days_ago)
+        rel = _RELATIVE_RE.search(text)
+        if rel:
+            token = rel.group(1).lower()
+            if token.startswith("yesterday") or token == "last night" or token == "yesterday":
+                base = now - timedelta(days=1)
+            elif token.startswith("next "):
+                base = now + timedelta(days=1)
+        ts = base.replace(hour=0, minute=0, second=0, microsecond=0)
         return ts.astimezone(timezone.utc).isoformat(), None, None
 
     match = _RELATIVE_RE.search(text)
@@ -541,6 +565,8 @@ def _parse_time(text: str, *, local_tz=None) -> tuple[str | None, str | None, st
             base = now - timedelta(days=days_ago)
         if token.startswith("yesterday") or token == "last night":
             base = now - timedelta(days=1)
+        elif token.startswith("next "):
+            base = now + timedelta(days=1)
 
         # Fixed default times for dayparts (local), then stored as UTC.
         if "morning" in token:
@@ -882,8 +908,10 @@ def _clean_candidate_text(text: str) -> str:
     value = re.sub(r"\b(plenty|many|much|some)\s+of\b", " ", value)
     value = re.sub(r"\b\d{1,2}\s*-\s*\d{1,2}\b", " ", value)
     value = _TIME_AT_RE.sub(" ", value)
+    value = _DAYS_AGO_RE.sub(" ", value)
     value = _RELATIVE_RE.sub(" ", value)
     value = _DATE_TOKEN_RE.sub(" ", value)
+    value = re.sub(r"\bthat\s+day\b", " ", value)
     value = re.sub(r"\b(?:this|last)\s+(?:week|month)\b", " ", value)
     # Remove common temporal phrases that otherwise leak nouns into exposure items
     # (e.g., "face wash before bed" -> "face wash", not "face wash bed").
@@ -986,6 +1014,10 @@ def _resolve_symptom_with_fallback(name: str | None) -> int | None:
 def _is_low_signal_candidate(value: str) -> bool:
     normalized = " ".join(value.strip().lower().split())
     if not normalized:
+        return True
+    if _DAYS_AGO_RE.fullmatch(normalized):
+        return True
+    if re.fullmatch(r"(?:that|next)\s+day", normalized):
         return True
     if normalized in _LOW_SIGNAL_TOKENS:
         return True
@@ -1460,9 +1492,14 @@ def parse_text_events(text: str, *, local_tz=None) -> list[ParsedEvent]:
     if not segments:
         segments = [text.strip()]
     text_lower = text.lower()
-    full_text_mixed_signal = (
+    full_text_exposure_signal = (
         _EXPOSURE_VERBS.search(text_lower) is not None
-        and (_SYMPTOM_CUES_RE.search(text_lower) is not None or _COMMON_SYMPTOM_TERMS_RE.search(text_lower) is not None)
+        or (_MEAL_CONTEXT_RE.search(text_lower) is not None and re.search(r"\b(had|have|having)\b", text_lower) is not None)
+        or _CONTEXT_EXPOSURE_RE.search(text_lower) is not None
+        or _LIFESTYLE_EXPOSURE_RE.search(text_lower) is not None
+    )
+    full_text_mixed_signal = full_text_exposure_signal and (
+        _SYMPTOM_CUES_RE.search(text_lower) is not None or _COMMON_SYMPTOM_TERMS_RE.search(text_lower) is not None
     )
     full_text_time_signal_mentions = (
         len(_DATE_TOKEN_RE.findall(text_lower))
@@ -1548,9 +1585,14 @@ def parse_text_events(text: str, *, local_tz=None) -> list[ParsedEvent]:
             )
             >= 2
         )
-        has_mixed_signal = (
+        segment_exposure_signal = (
             _EXPOSURE_VERBS.search(segment_lower) is not None
-            and (_SYMPTOM_CUES_RE.search(segment_lower) is not None or _COMMON_SYMPTOM_TERMS_RE.search(segment_lower) is not None)
+            or (_MEAL_CONTEXT_RE.search(segment_lower) is not None and re.search(r"\b(had|have|having)\b", segment_lower) is not None)
+            or _CONTEXT_EXPOSURE_RE.search(segment_lower) is not None
+            or _LIFESTYLE_EXPOSURE_RE.search(segment_lower) is not None
+        )
+        has_mixed_signal = segment_exposure_signal and (
+            _SYMPTOM_CUES_RE.search(segment_lower) is not None or _COMMON_SYMPTOM_TERMS_RE.search(segment_lower) is not None
         )
         symptom_signal_mentions = len(_COMMON_SYMPTOM_TERMS_RE.findall(segment_lower)) + len(_SYMPTOM_CUES_RE.findall(segment_lower))
         time_signal_mentions = (
