@@ -395,3 +395,9 @@
 
 ## Commit 57 
 - refine prompts for evidence retrival web search
+
+## Commit 58
+- strip NUL bytes from llm payload
+    - was causing failed jobs as Postgres will not store nul byte text chars
+- added demultiply functionality to rag.py during evidence aggregation, preventing duplicate claims/citations from being written into insights
+    - collapses identical rows which affects scoring / evidence quality metrics

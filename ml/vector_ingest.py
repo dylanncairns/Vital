@@ -88,6 +88,24 @@ def _sanitize_error_message(message: str) -> str:
     return text[:1000]
 
 
+def _strip_nul_bytes(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return value.replace("\x00", "")
+
+
+def _sanitize_db_text_fields(value: Any) -> Any:
+    if isinstance(value, str):
+        return _strip_nul_bytes(value)
+    if isinstance(value, list):
+        return [_sanitize_db_text_fields(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_sanitize_db_text_fields(item) for item in value)
+    if isinstance(value, dict):
+        return {key: _sanitize_db_text_fields(item) for key, item in value.items()}
+    return value
+
+
 def ensure_vector_store_id(*, provided_id: str | None = None, name: str = "vital-rag-store") -> str:
     if provided_id:
         return provided_id
@@ -216,7 +234,8 @@ def _persist_discovered_sources(
     try:
         persisted: list[dict[str, Any]] = []
         for record in records:
-            payload = record["payload"]
+            payload = _sanitize_db_text_fields(record["payload"])
+            filename = _strip_nul_bytes(str(record["filename"])) or "rag_source_document.txt"
             payload_json = json.dumps(payload, indent=2, ensure_ascii=False)
             source_hash = _source_hash(user_id=user_id, payload=payload)
             row = conn.execute(
@@ -244,7 +263,7 @@ def _persist_discovered_sources(
                     user_id,
                     payload.get("query"),
                     payload.get("original_query"),
-                    record["filename"],
+                    filename,
                     payload.get("title"),
                     payload.get("url"),
                     payload.get("publication_date"),

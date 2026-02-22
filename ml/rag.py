@@ -36,6 +36,24 @@ def _sanitize_error_message(message: str) -> str:
         )
     return text[:1000]
 
+
+def _strip_nul_bytes(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return value.replace("\x00", "")
+
+
+def _sanitize_db_text_fields(value: Any) -> Any:
+    if isinstance(value, str):
+        return _strip_nul_bytes(value)
+    if isinstance(value, list):
+        return [_sanitize_db_text_fields(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_sanitize_db_text_fields(item) for item in value)
+    if isinstance(value, dict):
+        return {key: _sanitize_db_text_fields(item) for key, item in value.items()}
+    return value
+
 RAG_SCHEMA = {
     "name": "rag_cited_answer",
     "schema": {
@@ -144,7 +162,7 @@ def _normalize_phrase(text: str) -> str:
 
 
 def chunk_text(text: str, *, chunk_chars: int = 420, overlap_chars: int = 80) -> list[str]:
-    content = (text or "").strip()
+    content = (_strip_nul_bytes(text or "") or "").strip()
     if not content:
         return []
     if chunk_chars <= 0:
@@ -233,6 +251,7 @@ def add_files_to_vector_store(vector_store_id: str, file_ids: list[str]) -> None
 
 
 def _upsert_paper(conn, paper: dict[str, Any], *, ingested_at: str) -> int:
+    paper = _sanitize_db_text_fields(paper)
     paper_url = paper.get("url")
     if paper_url is not None and isinstance(paper_url, str) and paper_url.strip():
         existing = conn.execute(
@@ -270,11 +289,11 @@ def _upsert_paper(conn, paper: dict[str, Any], *, ingested_at: str) -> int:
         RETURNING id
         """,
         (
-            paper["title"],
-            paper["url"],
-            paper.get("abstract"),
-            paper.get("publication_date"),
-            paper.get("source"),
+            _strip_nul_bytes(paper["title"]),
+            _strip_nul_bytes(paper["url"]),
+            _strip_nul_bytes(paper.get("abstract")),
+            _strip_nul_bytes(paper.get("publication_date")),
+            _strip_nul_bytes(paper.get("source")),
             ingested_at,
         ),
     )
@@ -465,6 +484,10 @@ def ingest_paper_claim_chunks(
     citation_url: str | None = None,
     source_text: str = "",
 ) -> int:
+    summary = _strip_nul_bytes(summary) or ""
+    citation_title = _strip_nul_bytes(citation_title)
+    citation_url = _strip_nul_bytes(citation_url)
+    source_text = _strip_nul_bytes(source_text) or ""
     chunks = chunk_text(source_text)
     inserted = 0
     if not chunks:
@@ -495,7 +518,7 @@ def ingest_paper_claim_chunks(
                 None,
                 citation_title,
                 citation_url,
-                (chunk[:280] + "...") if len(chunk) > 280 else chunk,
+                _strip_nul_bytes((chunk[:280] + "...") if len(chunk) > 280 else chunk),
                 study_design,
                 study_quality_score,
                 population_match,
@@ -1548,8 +1571,27 @@ def aggregate_evidence(
     total_weight = 0.0
     relevance_sum = 0.0
     citations: list[dict[str, Any]] = []
+    seen_citation_keys: set[tuple[str, str, str]] = set()
+    seen_scoring_keys: set[tuple[str, str, str]] = set()
+    unique_claim_count = 0
 
     for claim in retrieved_claims:
+        scoring_text = (
+            claim.get("citation_snippet")
+            or claim.get("chunk_text")
+            or claim.get("summary")
+            or ""
+        )
+        scoring_key = (
+            str(claim.get("citation_title") or claim.get("title") or "").strip().lower(),
+            str(claim.get("citation_url") or "").strip().lower(),
+            str(scoring_text or "").strip().lower(),
+        )
+        if scoring_key in seen_scoring_keys:
+            continue
+        seen_scoring_keys.add(scoring_key)
+        unique_claim_count += 1
+
         base_polarity = max(-1.0, min(1.0, float(claim.get("evidence_polarity_and_strength") or 0.0)))
         cue_text = " ".join(
             part
@@ -1600,31 +1642,40 @@ def aggregate_evidence(
             or ""
         )
         snippet_text = (snippet[:280] + "...") if len(snippet) > 280 else snippet
-        citations.append(
-            {
-                "title": claim.get("citation_title") or claim.get("title"),
-                "source": claim.get("source"),
-                "url": claim.get("citation_url"),
-                "snippet": snippet_text,
-                "evidence_polarity_and_strength": max(
-                    -1.0, min(1.0, float(claim.get("evidence_polarity_and_strength") or 0.0))
-                ),
-                "study_design": claim.get("study_design"),
-                "study_quality_score": study_quality,
-                "population_match": population_match,
-                "temporality_match": temporality_match,
-                "risk_of_bias": risk_of_bias,
-                "llm_confidence": llm_confidence,
-            }
+        citation_title = claim.get("citation_title") or claim.get("title")
+        citation_url = claim.get("citation_url")
+        citation_key = (
+            str(citation_title or "").strip().lower(),
+            str(citation_url or "").strip().lower(),
+            str(snippet_text or "").strip().lower(),
         )
+        if citation_key not in seen_citation_keys:
+            seen_citation_keys.add(citation_key)
+            citations.append(
+                {
+                    "title": citation_title,
+                    "source": claim.get("source"),
+                    "url": citation_url,
+                    "snippet": snippet_text,
+                    "evidence_polarity_and_strength": max(
+                        -1.0, min(1.0, float(claim.get("evidence_polarity_and_strength") or 0.0))
+                    ),
+                    "study_design": claim.get("study_design"),
+                    "study_quality_score": study_quality,
+                    "population_match": population_match,
+                    "temporality_match": temporality_match,
+                    "risk_of_bias": risk_of_bias,
+                    "llm_confidence": llm_confidence,
+                }
+            )
 
     evidence_score = (weighted_sum / total_weight) if total_weight > 0 else 0.0
     evidence_score = max(-1.0, min(1.0, evidence_score))
-    avg_relevance = (relevance_sum / len(retrieved_claims)) if retrieved_claims else 0.0
+    avg_relevance = (relevance_sum / unique_claim_count) if unique_claim_count > 0 else 0.0
     avg_relevance = max(0.0, min(1.0, avg_relevance))
     # Strength should not max out from a single claim.
     # One strong claim can still be meaningful, but multi-claim support increases confidence.
-    claim_count = len(retrieved_claims)
+    claim_count = unique_claim_count
     coverage_factor = min(1.0, 0.35 + (0.16 * max(0, claim_count - 1)))
     # Blend coverage and grounding quality so single strong claims are possible
     # but weak/low-coverage evidence does not saturate.
@@ -1643,7 +1694,7 @@ def aggregate_evidence(
         "evidence_strength_score": evidence_strength_score,
         "avg_relevance": avg_relevance,
         "evidence_summary": (
-            f"{len(retrieved_claims)} claim(s) retrieved; overall evidence is {direction}."
+            f"{claim_count} claim(s) retrieved; overall evidence is {direction}."
         ),
         "citations": citations,
     }
