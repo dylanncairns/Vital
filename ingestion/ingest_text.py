@@ -85,7 +85,7 @@ _RELATIVE_RE = re.compile(
     r"yesterday breakfast|yesterday lunch|yesterday dinner|"
     r"this morning|this afternoon|this evening|this night|"
     r"this breakfast|this lunch|this dinner|"
-    r"last night|tonight|today|yesterday|this week|last week|"
+    r"last night|for the night|tonight|today|yesterday|this week|last week|"
     r"breakfast|lunch|dinner|"
     r"morning|afternoon|evening|night"
     r")\b",
@@ -132,7 +132,7 @@ _DATE_TOKEN_RE = re.compile(
     r"(?:jan|january|feb|february|mar|march|apr|april|may|jun|june|jul|july|aug|august|sep|sept|september|oct|october|nov|november|dec|december)\s+\d{1,2}(?:,\s*\d{4})?|"
     r"\d{1,2}/\d{1,2}(?:/\d{2,4})?|"
     r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
-    r"today|yesterday|last night|tonight|this morning|this afternoon|this evening|this week|last week|"
+    r"today|yesterday|last night|for the night|tonight|this morning|this afternoon|this evening|this week|last week|"
     r"breakfast|lunch|dinner|this breakfast|this lunch|this dinner|"
     r"yesterday breakfast|yesterday lunch|yesterday dinner"
     r")\b",
@@ -140,7 +140,7 @@ _DATE_TOKEN_RE = re.compile(
 )
 _STRONG_RELATIVE_DATE_RE = re.compile(
     r"\b("
-    r"today|yesterday|last night|tonight|this week|last week|"
+    r"today|yesterday|last night|for the night|tonight|this week|last week|"
     r"this morning|this afternoon|this evening|this night|"
     r"yesterday morning|yesterday afternoon|yesterday evening|yesterday night|"
     r"yesterday breakfast|yesterday lunch|yesterday dinner"
@@ -566,6 +566,9 @@ def _parse_time(text: str, *, local_tz=None) -> tuple[str | None, str | None, st
         if token == "tonight":
             ts = base.replace(hour=21, minute=0, second=0, microsecond=0)
             return ts.astimezone(timezone.utc).isoformat(), None, None
+        if token == "for the night":
+            ts = base.replace(hour=21, minute=0, second=0, microsecond=0)
+            return ts.astimezone(timezone.utc).isoformat(), None, None
         if token == "last night":
             ts = base.replace(hour=22, minute=0, second=0, microsecond=0)
             return ts.astimezone(timezone.utc).isoformat(), None, None
@@ -576,11 +579,20 @@ def _parse_time(text: str, *, local_tz=None) -> tuple[str | None, str | None, st
             ts = base.replace(hour=12, minute=0, second=0, microsecond=0)
             return ts.astimezone(timezone.utc).isoformat(), None, None
         if token == "this week":
-            ts = base.replace(hour=12, minute=0, second=0, microsecond=0)
-            return ts.astimezone(timezone.utc).isoformat(), None, None
+            week_start = (base - timedelta(days=base.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+            week_end = now.replace(second=0, microsecond=0)
+            if week_end < week_start:
+                week_end = week_start
+            return None, week_start.astimezone(timezone.utc).isoformat(), week_end.astimezone(timezone.utc).isoformat()
         if token == "last week":
-            ts = (base - timedelta(days=7)).replace(hour=12, minute=0, second=0, microsecond=0)
-            return ts.astimezone(timezone.utc).isoformat(), None, None
+            this_week_start = (base - timedelta(days=base.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+            last_week_start = this_week_start - timedelta(days=7)
+            last_week_end = this_week_start - timedelta(seconds=1)
+            return (
+                None,
+                last_week_start.astimezone(timezone.utc).isoformat(),
+                last_week_end.astimezone(timezone.utc).isoformat(),
+            )
         else:
             ts = base.replace(hour=12, minute=0, second=0, microsecond=0)
             return ts.astimezone(timezone.utc).isoformat(), None, None
@@ -806,6 +818,12 @@ def _fallback_exposure_candidate_from_text(text: str) -> str | None:
         return "smoking"
     if re.search(r"\b(inhaled|inhale|inhaling)\b", low):
         return "inhalation"
+    if re.search(r"\b(?:pulled\s+an?\s+)?all[- ]?nighter\b", low) or re.search(
+        r"\b(barely slept|hardly slept|didn't sleep|didnt sleep|no sleep|poor sleep)\b", low
+    ):
+        return "poor sleep"
+    if re.search(r"\b(worked\s+(?:a\s+)?long\s+shift|long shift|overnight shift)\b", low):
+        return "long shift"
     if _LIFESTYLE_EXPOSURE_RE.search(low):
         # Reuse candidate cleaning normalization for lifestyle phrases.
         cleaned = _clean_candidate_text(low)
@@ -823,6 +841,7 @@ def _clean_candidate_text(text: str) -> str:
     value = re.sub(r"\b(?:did\s*not|didn't|didnt)\s+sleep\b", " poor sleep ", value)
     value = re.sub(r"\bcould\s*not\s+sleep\s+at\s+all\b|\bcouldn't sleep at all\b|\bcouldnt sleep at all\b", " no sleep ", value)
     value = re.sub(r"\b(?:pulled\s+an?\s+)?all[- ]?nighter\b", " poor sleep ", value)
+    value = re.sub(r"\bpoor sleep\s+(?:for\s+work|for\s+school|working|studying)\b", " poor sleep ", value)
     # Remove conversational scaffolding while preserving medical terms like "testosterone".
     value = re.sub(r"\b(?:did|do|done)\s+(?:that\s+)?test\b", " ", value)
     value = re.sub(r"\bwent\s+and\b", " ", value)
@@ -914,6 +933,7 @@ _SYMPTOM_RESOLUTION_FALLBACKS: dict[str, list[str]] = {
     "fatigue": ["tired"],
     "dizziness": ["lightheadedness"],
     "palpitations": ["racing heart", "tachycardia"],
+    "chest tightness": ["chest pain", "shortness of breath"],
 }
 
 
@@ -1156,6 +1176,17 @@ def _override_parsed_timestamp(parsed: ParsedEvent, timestamp: str) -> ParsedEve
     )
 
 
+def _choose_route_from_api_or_rules(text: str, api_route_value) -> str:
+    inferred_route = normalize_route(_infer_route(text), strict=False)
+    route = normalize_route(api_route_value, strict=False) if isinstance(api_route_value, str) else "other"
+    if route in {"unknown", "other"}:
+        return inferred_route
+    # Prefer deterministic route for strong, easy lexical cases where API sometimes drifts.
+    if route == "proximity_environment" and inferred_route in {"ingestion", "topical", "inhalation", "injection", "behavioral"}:
+        return inferred_route
+    return route
+
+
 def _expand_multi_item_exposure(parsed: ParsedEvent, text: str) -> list[ParsedEvent]:
     if parsed.event_type != "exposure":
         return [parsed]
@@ -1204,6 +1235,60 @@ def _expand_multi_item_exposure(parsed: ParsedEvent, text: str) -> list[ParsedEv
                 symptom_id=parsed.symptom_id,
                 severity=parsed.severity,
                 source_text=parsed.source_text,
+            )
+        )
+    return out
+
+
+def _expand_multi_symptom_event(parsed: ParsedEvent, text: str) -> list[ParsedEvent]:
+    if parsed.event_type != "symptom":
+        return [parsed]
+    clause = (text or "").strip()
+    if not clause:
+        return [parsed]
+    if not re.search(r"\b(and|/|\+)\b|[+/]", clause, re.I):
+        return [parsed]
+
+    parts = [
+        part.strip(" ,.;")
+        for part in re.split(r"\s*(?:,|/|\+|\band\b)\s*", clause, flags=re.I)
+        if part and part.strip(" ,.;")
+    ]
+    if len(parts) <= 1:
+        return [parsed]
+
+    out: list[ParsedEvent] = [parsed]
+    seen_symptom_ids: set[int] = set()
+    if parsed.symptom_id is not None:
+        seen_symptom_ids.add(int(parsed.symptom_id))
+
+    # Preserve the original clause context (time words, etc.) but parse each symptom fragment.
+    for part in parts:
+        part_lower = part.lower()
+        if not (_SYMPTOM_CUES_RE.search(part_lower) or _COMMON_SYMPTOM_TERMS_RE.search(part_lower)):
+            continue
+        candidate = _normalize_symptom_candidate(_clean_candidate_text(part))
+        if not candidate or not _is_valid_symptom_candidate(candidate, clause):
+            continue
+        symptom_id = _resolve_symptom_with_fallback(candidate)
+        if symptom_id is None:
+            continue
+        symptom_id_int = int(symptom_id)
+        if symptom_id_int in seen_symptom_ids:
+            continue
+        seen_symptom_ids.add(symptom_id_int)
+        out.append(
+            ParsedEvent(
+                event_type="symptom",
+                timestamp=parsed.timestamp,
+                time_range_start=parsed.time_range_start,
+                time_range_end=parsed.time_range_end,
+                time_confidence=parsed.time_confidence,
+                item_id=None,
+                route=None,
+                symptom_id=symptom_id_int,
+                severity=parsed.severity,
+                source_text=clause,
             )
         )
     return out
@@ -1363,7 +1448,10 @@ def parse_text_events(text: str, *, local_tz=None) -> list[ParsedEvent]:
     if api_events and not should_skip_api_seed:
         for parsed in _apply_context_to_api_events(text=text, api_events=api_events, local_tz=local_tz):
             expanded_rows = _expand_multi_item_exposure(parsed, parsed.source_text or text)
-            for expanded in expanded_rows:
+            symptom_expanded_rows: list[ParsedEvent] = []
+            for row in expanded_rows:
+                symptom_expanded_rows.extend(_expand_multi_symptom_event(row, row.source_text or text))
+            for expanded in symptom_expanded_rows:
                 _append_if_new(expanded)
                 if _event_has_time(expanded):
                     last_context_timestamp = expanded.timestamp
@@ -1431,7 +1519,11 @@ def parse_text_events(text: str, *, local_tz=None) -> list[ParsedEvent]:
             # Prefer clause parsing over whole-segment parse for complex mixed/multi-event segments
             # to avoid blended artifacts (e.g., first time phrase incorrectly applied to later symptoms).
             if should_trust_whole_segment_parse:
-                for expanded in _expand_multi_item_exposure(parsed, segment):
+                expanded_rows = _expand_multi_item_exposure(parsed, segment)
+                symptom_expanded_rows: list[ParsedEvent] = []
+                for row in expanded_rows:
+                    symptom_expanded_rows.extend(_expand_multi_symptom_event(row, segment))
+                for expanded in symptom_expanded_rows:
                     _append_if_new(expanded)
             if should_trust_whole_segment_parse:
                 continue
@@ -1449,18 +1541,18 @@ def parse_text_events(text: str, *, local_tz=None) -> list[ParsedEvent]:
             clause_ts, clause_start, clause_end = _parse_time(clause, local_tz=local_tz)
             anaphoric_clause_ts = _resolve_anaphoric_daypart_time(
                 clause,
-                context_timestamp=seg_ts or last_context_timestamp,
-                context_start=seg_start or last_context_start,
-                context_end=seg_end or last_context_end,
+                context_timestamp=last_context_timestamp or seg_ts,
+                context_start=last_context_start or seg_start,
+                context_end=last_context_end or seg_end,
                 local_tz=local_tz,
             )
             if anaphoric_clause_ts is not None:
                 clause_ts, clause_start, clause_end = anaphoric_clause_ts, None, None
             bedtime_clause_ts = _resolve_bedtime_clause_time(
                 clause,
-                context_timestamp=seg_ts or last_context_timestamp,
-                context_start=seg_start or last_context_start,
-                context_end=seg_end or last_context_end,
+                context_timestamp=last_context_timestamp or seg_ts,
+                context_start=last_context_start or seg_start,
+                context_end=last_context_end or seg_end,
                 local_tz=local_tz,
             )
             if bedtime_clause_ts is not None and clause_ts is None and clause_start is None and clause_end is None:
@@ -1479,12 +1571,15 @@ def parse_text_events(text: str, *, local_tz=None) -> list[ParsedEvent]:
                         clause_parsed = _override_parsed_timestamp(clause_parsed, seg_ts)
                 clause_parsed = _apply_time_context(
                     clause_parsed,
-                    context_timestamp=clause_ts or seg_ts or last_context_timestamp,
-                    context_start=clause_start or seg_start or last_context_start,
-                    context_end=clause_end or seg_end or last_context_end,
+                    context_timestamp=clause_ts or last_context_timestamp or seg_ts,
+                    context_start=clause_start or last_context_start or seg_start,
+                    context_end=clause_end or last_context_end or seg_end,
                 )
                 expanded_rows = _expand_multi_item_exposure(clause_parsed, clause)
-                for expanded in expanded_rows:
+                symptom_expanded_rows: list[ParsedEvent] = []
+                for row in expanded_rows:
+                    symptom_expanded_rows.extend(_expand_multi_symptom_event(row, clause))
+                for expanded in symptom_expanded_rows:
                     _append_if_new(expanded)
                     if _has_time_info(expanded):
                         last_context_timestamp = expanded.timestamp
@@ -1535,13 +1630,7 @@ def _api_event_to_parsed_event(
                 item_id = resolve_item_id(fallback_item)
         if item_id is None:
             return None
-        route = entry.get("route")
-        if isinstance(route, str):
-            route = normalize_route(route, strict=False)
-        else:
-            route = normalize_route(_infer_route(source_text), strict=False)
-        if route in {"unknown", "other"}:
-            route = normalize_route(_infer_route(source_text), strict=False)
+        route = _choose_route_from_api_or_rules(source_text, entry.get("route"))
         return ParsedEvent(
             event_type="exposure",
             timestamp=timestamp,
@@ -1832,12 +1921,7 @@ def parse_with_api(text: str, *, local_tz=None) -> ParsedEvent | None:
                     item_id = resolve_item_id(cleaned_item)
         if item_id is None:
             return None
-        if isinstance(route, str):
-            route = normalize_route(route, strict=False)
-        else:
-            route = "other"
-        if route in {"unknown", "other"}:
-            route = normalize_route(_infer_route(text), strict=False)
+        route = _choose_route_from_api_or_rules(text, route)
         symptom_id = None
         severity = None
     else:

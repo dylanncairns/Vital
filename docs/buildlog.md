@@ -402,5 +402,5 @@
 - added demultiply functionality to rag.py during evidence aggregation, preventing duplicate claims/citations from being written into insights
     - collapses identical rows which affects scoring / evidence quality metrics
 
-## Commits 59-61
+## Commits 59-62
 - widen base of knowledge and rules for text ingestion
