@@ -1728,7 +1728,11 @@ def aggregate_evidence(
                     "source": claim.get("source"),
                     "url": citation_url,
                     "snippet": snippet_text,
-                    "evidence_polarity_and_strength": max(
+                    # Store the adjusted polarity actually used in aggregation so downstream
+                    # quality metrics (support/contradict/neutral ratios) are consistent
+                    # with the signed evidence_score gate.
+                    "evidence_polarity_and_strength": polarity,
+                    "raw_evidence_polarity_and_strength": max(
                         -1.0, min(1.0, float(claim.get("evidence_polarity_and_strength") or 0.0))
                     ),
                     "study_design": claim.get("study_design"),
