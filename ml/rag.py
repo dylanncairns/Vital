@@ -811,7 +811,10 @@ def _apply_support_direction_cues(
         # Explicit non-supportive wording must not become positive correlation support.
         return min(support_direction_score, -0.6)
     if any(term in text for term in _LIMITED_EVIDENCE_CUE_TERMS):
-        return min(support_direction_score, 0.0)
+        # "Limited/inconclusive" should not be treated as strong support, but hard-zeroing
+        # destroys all directional signal and causes aggregate evidence to collapse to 0.
+        # Cap weakly positive support instead of forcing neutral.
+        return min(support_direction_score, 0.12)
     return support_direction_score
 
 
@@ -826,7 +829,7 @@ def _polarity_from_text_cues(
     if any(term in normalized for term in _CONTRADICTORY_CUE_TERMS):
         return min(max(-1.0, fallback_polarity), -0.7)
     if any(term in normalized for term in _LIMITED_EVIDENCE_CUE_TERMS):
-        return min(max(-1.0, fallback_polarity), 0.0)
+        return min(max(-1.0, fallback_polarity), 0.12)
     return max(-1.0, min(1.0, fallback_polarity))
 
 
@@ -1678,14 +1681,18 @@ def aggregate_evidence(
             fallback_polarity=base_polarity,
             text=cue_text,
         )
-        if _is_hazard_context_mismatch(
+        hazard_context_mismatch = _is_hazard_context_mismatch(
             item_name=item_name,
             snippet=str(claim.get("citation_snippet") or ""),
             title=str(claim.get("citation_title") or claim.get("title") or ""),
-        ):
-            polarity = min(polarity, 0.0)
-        if _symptom_context_mismatch(symptom_name=symptom_name, text=cue_text):
-            polarity = min(polarity, 0.0)
+        )
+        symptom_context_mismatch = _symptom_context_mismatch(symptom_name=symptom_name, text=cue_text)
+        # Downweight suspicious rows heavily, but avoid hard-neutralizing every positive row;
+        # hard zeroes at full weight cause the aggregate signed score to collapse to 0.0.
+        if hazard_context_mismatch and polarity > 0.0:
+            polarity = min(polarity, 0.08)
+        if symptom_context_mismatch and polarity > 0.0:
+            polarity = min(polarity, 0.08)
         design_multiplier = _study_design_multiplier(claim.get("study_design"))
         relevance = max(0.05, float(claim.get("relevance") or 0.0))
         study_quality = _bounded_metric(claim.get("study_quality_score"))
@@ -1702,6 +1709,11 @@ def aggregate_evidence(
             + 0.05 * llm_confidence
         )
         weight = max(0.05, min(1.0, quality_weight))
+        if hazard_context_mismatch:
+            weight *= 0.25
+        if symptom_context_mismatch:
+            weight *= 0.35
+        weight = max(0.02, min(1.0, weight))
         relevance_sum += weight
         weighted_sum += polarity * design_multiplier * weight
         total_weight += weight
