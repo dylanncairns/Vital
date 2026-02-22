@@ -85,7 +85,7 @@ _RELATIVE_RE = re.compile(
     r"yesterday breakfast|yesterday lunch|yesterday dinner|"
     r"this morning|this afternoon|this evening|this night|"
     r"this breakfast|this lunch|this dinner|"
-    r"last night|tonight|today|yesterday|"
+    r"last night|tonight|today|yesterday|this week|last week|"
     r"breakfast|lunch|dinner|"
     r"morning|afternoon|evening|night"
     r")\b",
@@ -99,7 +99,7 @@ _SYMPTOM_CUES_RE = re.compile(
     r"\b("
     r"felt|feel|feeling|tired|fatigued|exhausted|"
     r"ache|pain|hurt|hurts|hurting|sore|burning|pressure|tightness|nausea|headache|stomachache|"
-    r"dizzy|dizziness|lightheaded|light-headed|vertigo|faint|fainting|"
+    r"dizzy|dizziness|lightheaded|light-headed|vertigo|faint|fainting|shaky|shakiness|jittery|trembling|tremor|"
     r"anxious|anxiety|panic|"
     r"insomnia|can't sleep|cannot sleep|trouble sleeping|"
     r"brain fog|memory|remember|forget|forgetful|concentrate|focus|"
@@ -132,7 +132,7 @@ _DATE_TOKEN_RE = re.compile(
     r"(?:jan|january|feb|february|mar|march|apr|april|may|jun|june|jul|july|aug|august|sep|sept|september|oct|october|nov|november|dec|december)\s+\d{1,2}(?:,\s*\d{4})?|"
     r"\d{1,2}/\d{1,2}(?:/\d{2,4})?|"
     r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
-    r"today|yesterday|last night|tonight|this morning|this afternoon|this evening|"
+    r"today|yesterday|last night|tonight|this morning|this afternoon|this evening|this week|last week|"
     r"breakfast|lunch|dinner|this breakfast|this lunch|this dinner|"
     r"yesterday breakfast|yesterday lunch|yesterday dinner"
     r")\b",
@@ -140,7 +140,7 @@ _DATE_TOKEN_RE = re.compile(
 )
 _STRONG_RELATIVE_DATE_RE = re.compile(
     r"\b("
-    r"today|yesterday|last night|tonight|"
+    r"today|yesterday|last night|tonight|this week|last week|"
     r"this morning|this afternoon|this evening|this night|"
     r"yesterday morning|yesterday afternoon|yesterday evening|yesterday night|"
     r"yesterday breakfast|yesterday lunch|yesterday dinner"
@@ -202,7 +202,7 @@ _COMMON_SYMPTOM_TERMS_RE = re.compile(
     r"high blood pressure|blood pressure|hypertension|"
     r"acne|rash|itch|itchy|hives|fatigue|tired|brain fog|"
     r"diarrhea|constipation|bloat|bloating|cramp|cramps|"
-    r"dizzy|dizziness|anxiety|insomnia|fever|cough|sore throat"
+    r"dizzy|dizziness|shaky|shakiness|jittery|tremor|trembling|anxiety|insomnia|fever|cough|sore throat"
     r")\b",
     re.I,
 )
@@ -216,6 +216,7 @@ _SYMPTOM_SYNONYM_RULES: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\bforgetful(?:ness)?\b", re.I), "brain fog"),
     (re.compile(r"\b(light[- ]?headed|lightheadedness)\b", re.I), "dizziness"),
     (re.compile(r"\b(dizzy|dizziness|vertigo|spinning)\b", re.I), "dizziness"),
+    (re.compile(r"\b(shaky|shakiness|jittery|trembl(?:e|ing)|tremor)\b", re.I), "dizziness"),
     (re.compile(r"\b(exhausted|worn out|low energy|no energy|drained)\b", re.I), "fatigue"),
     (re.compile(r"\b(tired(?:ness)?|fatigued)\b", re.I), "fatigue"),
     (re.compile(r"\b(can'?t sleep|cannot sleep|unable to sleep|trouble sleeping|difficulty sleeping|poor sleep|sleep is bad)\b", re.I), "insomnia"),
@@ -351,6 +352,37 @@ def _resolve_relative_clause_time(
         resolved_local = anchor_local + timedelta(hours=2)
     else:
         resolved_local = anchor_local - timedelta(hours=2)
+    return resolved_local.astimezone(timezone.utc).isoformat()
+
+
+def _resolve_bedtime_clause_time(
+    text: str,
+    *,
+    context_timestamp: str | None,
+    context_start: str | None,
+    context_end: str | None,
+    local_tz=None,
+) -> str | None:
+    if re.search(r"\b(?:before|at)\s+bed(?:time)?\b|\bbefore\s+sleep(?:ing)?\b", text, re.I) is None:
+        return None
+    anchor_iso = _context_anchor_iso(
+        context_timestamp=context_timestamp,
+        context_start=context_start,
+        context_end=context_end,
+    )
+    tz = local_tz or _LOCAL_TZ
+    if anchor_iso:
+        try:
+            anchor = datetime.fromisoformat(anchor_iso.replace("Z", "+00:00"))
+            anchor_local = anchor.astimezone(tz)
+        except ValueError:
+            anchor_local = datetime.now().astimezone(tz)
+    else:
+        anchor_local = datetime.now().astimezone(tz)
+    # If anchored to morning/afternoon, "before bed" usually refers to prior night.
+    if anchor_local.hour <= 15:
+        anchor_local = anchor_local - timedelta(days=1)
+    resolved_local = anchor_local.replace(hour=22, minute=0, second=0, microsecond=0)
     return resolved_local.astimezone(timezone.utc).isoformat()
 
 
@@ -543,6 +575,12 @@ def _parse_time(text: str, *, local_tz=None) -> tuple[str | None, str | None, st
         if token == "today":
             ts = base.replace(hour=12, minute=0, second=0, microsecond=0)
             return ts.astimezone(timezone.utc).isoformat(), None, None
+        if token == "this week":
+            ts = base.replace(hour=12, minute=0, second=0, microsecond=0)
+            return ts.astimezone(timezone.utc).isoformat(), None, None
+        if token == "last week":
+            ts = (base - timedelta(days=7)).replace(hour=12, minute=0, second=0, microsecond=0)
+            return ts.astimezone(timezone.utc).isoformat(), None, None
         else:
             ts = base.replace(hour=12, minute=0, second=0, microsecond=0)
             return ts.astimezone(timezone.utc).isoformat(), None, None
@@ -672,7 +710,7 @@ def _infer_route(text: str) -> str:
         return "proximity_environment"
     if re.search(r"\b(smoked|smoke|vaped|vape|inhaled|inhale|inhaling)\b", t):
         return "inhalation"
-    if re.search(r"\b(applied|apply|applying|rubbed|rub|rubbing|cream|lotion|ointment|topical|used on)\b", t):
+    if re.search(r"\b(applied|apply|applying|rubbed|rub|rubbing|cream|lotion|ointment|topical|used on|soap|shampoo|conditioner|cleanser|face wash|detergent|deodorant|perfume|fragrance|sunscreen|makeup)\b", t):
         return "topical"
     if re.search(r"\b(injected|inject|injecting|shot|iv)\b", t):
         return "injection"
@@ -784,6 +822,7 @@ def _clean_candidate_text(text: str) -> str:
     value = re.sub(r"\b(?:barely|hardly)\s+slept\b", " poor sleep ", value)
     value = re.sub(r"\b(?:did\s*not|didn't|didnt)\s+sleep\b", " poor sleep ", value)
     value = re.sub(r"\bcould\s*not\s+sleep\s+at\s+all\b|\bcouldn't sleep at all\b|\bcouldnt sleep at all\b", " no sleep ", value)
+    value = re.sub(r"\b(?:pulled\s+an?\s+)?all[- ]?nighter\b", " poor sleep ", value)
     # Remove conversational scaffolding while preserving medical terms like "testosterone".
     value = re.sub(r"\b(?:did|do|done)\s+(?:that\s+)?test\b", " ", value)
     value = re.sub(r"\bwent\s+and\b", " ", value)
@@ -796,6 +835,7 @@ def _clean_candidate_text(text: str) -> str:
     value = _TIME_AT_RE.sub(" ", value)
     value = _RELATIVE_RE.sub(" ", value)
     value = _DATE_TOKEN_RE.sub(" ", value)
+    value = re.sub(r"\b(?:this|last)\s+(?:week|month)\b", " ", value)
     # Remove common temporal phrases that otherwise leak nouns into exposure items
     # (e.g., "face wash before bed" -> "face wash", not "face wash bed").
     value = re.sub(r"\b(?:before|after|at)\s+bed(?:time)?\b", " ", value)
@@ -868,6 +908,26 @@ def _normalize_symptom_candidate(candidate: str) -> str:
     if term_match:
         return term_match.group(0).strip().lower()
     return value
+
+
+_SYMPTOM_RESOLUTION_FALLBACKS: dict[str, list[str]] = {
+    "fatigue": ["tired"],
+    "dizziness": ["lightheadedness"],
+    "palpitations": ["racing heart", "tachycardia"],
+}
+
+
+def _resolve_symptom_with_fallback(name: str | None) -> int | None:
+    if not name:
+        return None
+    resolved = resolve_symptom_id(name)
+    if resolved is not None:
+        return resolved
+    for alt in _SYMPTOM_RESOLUTION_FALLBACKS.get(str(name).strip().lower(), []):
+        resolved = resolve_symptom_id(alt)
+        if resolved is not None:
+            return resolved
+    return None
 
 
 def _is_low_signal_candidate(value: str) -> bool:
@@ -1041,7 +1101,7 @@ def _split_into_segments(text: str) -> list[str]:
         if len(cleaned) < 3:
             continue
         parts = re.split(
-            r"\s*(?:,\s*)?(?:and then|then|and now|now|after that|afterwards|later)\s+",
+            r"\s*(?:,\s*)?(?:and then|then|after that|afterwards|later)\s+",
             cleaned,
             flags=re.I,
         )
@@ -1252,6 +1312,23 @@ def parse_text_events(text: str, *, local_tz=None) -> list[ParsedEvent]:
     segments = _split_into_segments(text)
     if not segments:
         segments = [text.strip()]
+    text_lower = text.lower()
+    full_text_mixed_signal = (
+        _EXPOSURE_VERBS.search(text_lower) is not None
+        and (_SYMPTOM_CUES_RE.search(text_lower) is not None or _COMMON_SYMPTOM_TERMS_RE.search(text_lower) is not None)
+    )
+    full_text_time_signal_mentions = (
+        len(_DATE_TOKEN_RE.findall(text_lower))
+        + len(_TIME_AT_RE.findall(text_lower))
+        + len(_DAYS_AGO_RE.findall(text_lower))
+    )
+    should_skip_api_seed = (
+        full_text_mixed_signal
+        and (
+            full_text_time_signal_mentions >= 2
+            or re.search(r"\b(and now|later|after that|afterwards)\b", text_lower) is not None
+        )
+    )
     parsed_events: list[ParsedEvent] = []
     seen_keys: set[tuple[str, str | None, str | None, str | None, int | None, int | None, str | None]] = set()
     last_context_timestamp: str | None = None
@@ -1283,7 +1360,7 @@ def parse_text_events(text: str, *, local_tz=None) -> list[ParsedEvent]:
 
     # Prefer API extraction on long blurbs, but reinforce missing time context using
     # deterministic segment anchors so API rows do not lose relative daypart intent.
-    if api_events:
+    if api_events and not should_skip_api_seed:
         for parsed in _apply_context_to_api_events(text=text, api_events=api_events, local_tz=local_tz):
             expanded_rows = _expand_multi_item_exposure(parsed, parsed.source_text or text)
             for expanded in expanded_rows:
@@ -1379,10 +1456,21 @@ def parse_text_events(text: str, *, local_tz=None) -> list[ParsedEvent]:
             )
             if anaphoric_clause_ts is not None:
                 clause_ts, clause_start, clause_end = anaphoric_clause_ts, None, None
+            bedtime_clause_ts = _resolve_bedtime_clause_time(
+                clause,
+                context_timestamp=seg_ts or last_context_timestamp,
+                context_start=seg_start or last_context_start,
+                context_end=seg_end or last_context_end,
+                local_tz=local_tz,
+            )
+            if bedtime_clause_ts is not None and clause_ts is None and clause_start is None and clause_end is None:
+                clause_ts, clause_start, clause_end = bedtime_clause_ts, None, None
             clause_parsed = _parse_event_without_api(clause)
             if clause_parsed is not None:
                 if anaphoric_clause_ts is not None:
                     clause_parsed = _override_parsed_timestamp(clause_parsed, anaphoric_clause_ts)
+                elif bedtime_clause_ts is not None and clause_parsed.timestamp is None:
+                    clause_parsed = _override_parsed_timestamp(clause_parsed, bedtime_clause_ts)
                 elif segment_has_strong_date_anchor and not _has_strong_date_anchor(clause):
                     # Preserve explicit segment-level date anchor (e.g., "On February 10 ...")
                     # for weak daypart-only clauses split from the same sentence.
@@ -1470,7 +1558,7 @@ def _api_event_to_parsed_event(
     symptom_id = None
     normalized_symptom = _normalize_symptom_candidate(cleaned_candidate)
     if normalized_symptom and _is_valid_symptom_candidate(normalized_symptom, source_text):
-        symptom_id = resolve_symptom_id(normalized_symptom)
+        symptom_id = _resolve_symptom_with_fallback(normalized_symptom)
     if symptom_id is None:
         return None
     severity = entry.get("severity")
@@ -1759,7 +1847,7 @@ def parse_with_api(text: str, *, local_tz=None) -> ParsedEvent | None:
                 cleaned_symptom = _clean_candidate_text(symptom_name)
                 normalized_symptom = _normalize_symptom_candidate(cleaned_symptom)
                 if _is_valid_symptom_candidate(normalized_symptom, text):
-                    symptom_id = resolve_symptom_id(normalized_symptom)
+                    symptom_id = _resolve_symptom_with_fallback(normalized_symptom)
         if symptom_id is None:
             return None
         item_id = None
@@ -1818,7 +1906,7 @@ def parse_with_rules(text: str, *, local_tz=None) -> ParsedEvent | None:
         candidate = _normalize_symptom_candidate(cleaned_tokens[0]) if cleaned_tokens else ""
         if not candidate or not _is_valid_symptom_candidate(candidate, text):
             return None
-        symptom_id = resolve_symptom_id(candidate)
+        symptom_id = _resolve_symptom_with_fallback(candidate)
         if symptom_id is None:
             return None
         route = None
