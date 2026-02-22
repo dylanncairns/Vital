@@ -84,17 +84,48 @@ def enqueue_background_job(
     if conn is None:
         conn = get_connection()
     try:
-        existing = conn.execute(
+        payload_obj = payload or {}
+        combo_payload_secondary = payload_obj.get("secondary_item_id")
+        combo_payload_is_combo = bool(payload_obj.get("is_combo"))
+        dedupe_secondary_key = ""
+        if combo_payload_secondary is not None:
+            try:
+                dedupe_secondary_key = str(int(combo_payload_secondary))
+            except (TypeError, ValueError):
+                dedupe_secondary_key = str(combo_payload_secondary)
+        dedupe_is_combo_key = "1" if combo_payload_is_combo else "0"
+
+        extra_dedupe_sql = ""
+        extra_dedupe_params: list[Any] = []
+        if job_type == JOB_EVIDENCE_ACQUIRE_CANDIDATE:
+            # Evidence jobs can represent either a single-item candidate or a combo candidate.
+            # Distinguish them by payload metadata so they do not dedupe into one queue row.
+            extra_dedupe_sql = """
+              AND COALESCE(payload_json::jsonb->>'is_combo', '0') = %s
+              AND COALESCE(payload_json::jsonb->>'secondary_item_id', '') = %s
             """
+            extra_dedupe_params = [dedupe_is_combo_key, dedupe_secondary_key]
+
+        existing = conn.execute(
+            f"""
             SELECT id FROM background_jobs
             WHERE user_id = %s
               AND job_type = %s
               AND status IN ('pending', 'running')
               AND ((item_id IS NULL AND %s::bigint IS NULL) OR item_id = %s::bigint)
               AND ((symptom_id IS NULL AND %s::bigint IS NULL) OR symptom_id = %s::bigint)
+              {extra_dedupe_sql}
             LIMIT 1
             """,
-            (user_id, job_type, item_id, item_id, symptom_id, symptom_id),
+            (
+                user_id,
+                job_type,
+                item_id,
+                item_id,
+                symptom_id,
+                symptom_id,
+                *extra_dedupe_params,
+            ),
         ).fetchone()
         if existing is not None:
             return None
@@ -114,7 +145,7 @@ def enqueue_background_job(
                 job_type,
                 item_id,
                 symptom_id,
-                json.dumps(payload or {}, sort_keys=True),
+                json.dumps(payload_obj, sort_keys=True),
                 now_iso,
                 now_iso,
             ),

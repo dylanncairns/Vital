@@ -83,7 +83,8 @@ def process_background_jobs_batch(payload: ProcessJobsIn):
                 try:
                     row = conn.execute(
                         """
-                        SELECT evidence_strength_score, display_decision_reason, citations_json, evidence_summary
+                        SELECT evidence_strength_score, display_decision_reason, citations_json, evidence_summary,
+                               COALESCE(is_combo, 0) AS is_combo, secondary_item_id
                         FROM insights
                         WHERE user_id = %s AND item_id = %s AND symptom_id = %s
                         ORDER BY id DESC
@@ -109,21 +110,52 @@ def process_background_jobs_batch(payload: ProcessJobsIn):
                     )
                 )
                 if should_reacquire:
+                    reacquire_payload = {"trigger": "insufficient_evidence"}
+                    if row is not None:
+                        try:
+                            if int(row["is_combo"] or 0) == 1:
+                                reacquire_payload["is_combo"] = True
+                                if row["secondary_item_id"] is not None:
+                                    reacquire_payload["secondary_item_id"] = int(row["secondary_item_id"])
+                        except Exception:
+                            pass
                     enqueue_background_job(
                         user_id=user_id,
                         job_type=JOB_EVIDENCE_ACQUIRE_CANDIDATE,
                         item_id=int(item_id),
                         symptom_id=int(symptom_id),
-                        payload={"trigger": "insufficient_evidence"},
+                        payload=reacquire_payload,
                     )
             # evidence retrival - first try vector store search, if no citations then queue web search ingestion
             elif job["job_type"] == JOB_EVIDENCE_ACQUIRE_CANDIDATE:
                 if item_id is None or symptom_id is None:
                     raise ValueError("evidence job missing item_id or symptom_id")
+                payload_dict = job.get("payload") or {}
+                requested_is_combo = bool(payload_dict.get("is_combo"))
+                requested_secondary_item_id = payload_dict.get("secondary_item_id")
+                requested_secondary_item_id_int: int | None = None
+                if requested_secondary_item_id is not None:
+                    try:
+                        requested_secondary_item_id_int = int(requested_secondary_item_id)
+                    except (TypeError, ValueError):
+                        requested_secondary_item_id_int = None
                 candidates = [
                     candidate
                     for candidate in list_rag_sync_candidates(user_id)
-                    if int(candidate["item_id"]) == int(item_id) and int(candidate["symptom_id"]) == int(symptom_id)
+                    if int(candidate["item_id"]) == int(item_id)
+                    and int(candidate["symptom_id"]) == int(symptom_id)
+                    and (
+                        (
+                            requested_is_combo
+                            and candidate.get("secondary_item_id") is not None
+                            and requested_secondary_item_id_int is not None
+                            and int(candidate["secondary_item_id"]) == requested_secondary_item_id_int
+                        )
+                        or (
+                            not requested_is_combo
+                            and candidate.get("secondary_item_id") is None
+                        )
+                    )
                 ]
                 if candidates:
                     conn = get_connection()
@@ -173,16 +205,40 @@ def process_background_jobs_batch(payload: ProcessJobsIn):
                 recompute_insights(user_id, target_pairs={(int(item_id), int(symptom_id))})
                 conn_check = get_connection()
                 try:
-                    latest_insight = conn_check.execute(
-                        """
-                        SELECT citations_json, evidence_summary
-                        FROM insights
-                        WHERE user_id = %s AND item_id = %s AND symptom_id = %s
-                        ORDER BY id DESC
-                        LIMIT 1
-                        """,
-                        (user_id, int(item_id), int(symptom_id)),
-                    ).fetchone()
+                    if requested_is_combo and requested_secondary_item_id_int is not None:
+                        latest_insight = conn_check.execute(
+                            """
+                            SELECT citations_json, evidence_summary
+                            FROM insights
+                            WHERE user_id = %s
+                              AND item_id = %s
+                              AND secondary_item_id = %s
+                              AND symptom_id = %s
+                              AND COALESCE(is_combo, 0) = 1
+                            ORDER BY id DESC
+                            LIMIT 1
+                            """,
+                            (
+                                user_id,
+                                int(item_id),
+                                requested_secondary_item_id_int,
+                                int(symptom_id),
+                            ),
+                        ).fetchone()
+                    else:
+                        latest_insight = conn_check.execute(
+                            """
+                            SELECT citations_json, evidence_summary
+                            FROM insights
+                            WHERE user_id = %s
+                              AND item_id = %s
+                              AND symptom_id = %s
+                              AND COALESCE(is_combo, 0) = 0
+                            ORDER BY id DESC
+                            LIMIT 1
+                            """,
+                            (user_id, int(item_id), int(symptom_id)),
+                        ).fetchone()
                 finally:
                     conn_check.close()
                 if _insight_row_has_no_evidence(latest_insight):
