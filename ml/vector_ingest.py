@@ -60,6 +60,15 @@ _LAG_BUCKET_PHRASE = {
     "72h_7d": "within 7 days",
 }
 
+_RETRIEVAL_SYMPTOM_QUERY_ALIASES: dict[str, list[str]] = {
+    # High-ROI aliasing for common lay-vs-clinical wording mismatches.
+    "stomachache": ["abdominal pain", "stomach pain", "gastrointestinal upset", "nausea"],
+    "stomach pain": ["stomachache", "abdominal pain", "gastrointestinal upset"],
+    "abdominal pain": ["stomachache", "stomach pain", "abdominal discomfort"],
+    "headache": ["migraine", "head pain"],
+    "acne": ["breakouts", "pimples"],
+}
+
 _SECRET_PATTERNS = [
     (re.compile(r"sk-[A-Za-z0-9_\-]{12,}"), "[REDACTED_API_KEY]"),
     (re.compile(r"(Bearer\s+)[A-Za-z0-9_\-\.]+", re.I), r"\1[REDACTED_TOKEN]"),
@@ -430,6 +439,26 @@ def _route_context(routes: list[str]) -> str | None:
     return f"{primary} exposure"
 
 
+def _symptom_query_terms(symptom_name: str) -> list[str]:
+    base = (symptom_name or "").strip()
+    if not base:
+        return []
+    terms = [base]
+    for alias in _RETRIEVAL_SYMPTOM_QUERY_ALIASES.get(base.lower(), []):
+        alias_value = alias.strip()
+        if alias_value:
+            terms.append(alias_value)
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for term in terms:
+        key = term.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(term)
+    return deduped
+
+
 def _build_structured_queries_for_candidate(
     *,
     item_name: str | None,
@@ -457,28 +486,37 @@ def _build_structured_queries_for_candidate(
         return []
     route_phrase = _route_context(routes)
     lag_phrase = _primary_lag_phrase(lag_bucket_counts)
+    symptom_terms = _symptom_query_terms(symptom_name)
+    primary_symptom = symptom_terms[0] if symptom_terms else symptom_name
 
     queries: list[str] = []
     for term in terms:
         term_value = term.strip()
         if not term_value:
             continue
-        queries.extend(
-            [
-                f"{term_value} {symptom_name} adverse effect humans",
-                f"{term_value} {symptom_name} cohort trial",
-                f"{term_value} causes {symptom_name} side effect",
-            ]
-        )
+        for symptom_term in symptom_terms or [symptom_name]:
+            queries.extend(
+                [
+                    f"{term_value} {symptom_term} adverse effect humans",
+                    f"{term_value} {symptom_term} side effect humans",
+                    f"{term_value} {symptom_term} case report adverse event",
+                    f"{term_value} causes {symptom_term} side effect",
+                ]
+            )
+        queries.append(f"{term_value} adverse events gastrointestinal symptoms humans")
+        queries.append(f"{term_value} tolerability side effects humans trial")
+        queries.append(f"{term_value} safety adverse events humans")
+        queries.append(f"{term_value} {primary_symptom} cohort trial")
         if route_phrase:
-            queries.append(f"{term_value} {symptom_name} {route_phrase} humans")
+            queries.append(f"{term_value} {primary_symptom} {route_phrase} humans")
         if lag_phrase:
-            queries.append(f"{term_value} {symptom_name} onset {lag_phrase}")
+            queries.append(f"{term_value} {primary_symptom} onset {lag_phrase}")
     if combo_phrase:
         queries.extend(
             [
-                f"{combo_phrase} {symptom_name} interaction adverse effect humans",
-                f"{combo_phrase} linked to {symptom_name} cohort",
+                f"{combo_phrase} {primary_symptom} interaction adverse effect humans",
+                f"{combo_phrase} linked to {primary_symptom} cohort",
+                f"{combo_phrase} adverse events safety humans",
             ]
         )
 
@@ -512,6 +550,10 @@ def _discover_papers_for_query(
         "Do not invent URLs, titles, journals, or publication dates. "
         "Prioritize human medical evidence and avoid veterinary/agricultural papers "
         "unless the query is explicitly about animals/agriculture. "
+        "Prioritize publications that explicitly discuss adverse events, side effects, safety, "
+        "tolerability, symptoms, or clinically equivalent symptom terms for the exposure. "
+        "De-prioritize efficacy-only, nutrition-only, or general health-benefit papers unless "
+        "they explicitly report adverse events or the target symptom. "
         "If uncertain, return fewer papers."
     )
     normalized_query = _normalize_discovery_query(query)
@@ -524,7 +566,9 @@ def _discover_papers_for_query(
             "Each paper must include title; include URL when available.",
             "abstract should be concise and faithful to source text.",
             "snippet should capture a short, directly relevant passage from the source.",
-            "Exclude papers that do not clearly discuss the candidate exposure and symptom in humans.",
+            "Prioritize papers with explicit adverse-event/safety outcomes over efficacy-only papers.",
+            "Use clinically equivalent symptom wording when relevant (e.g., lay vs clinical terms), but keep results exposure-specific.",
+            "Exclude papers that do not clearly discuss the candidate exposure and symptom (or a close clinical synonym) in humans.",
         ],
     }
     response_obj: Any | None = None

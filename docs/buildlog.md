@@ -392,3 +392,6 @@
 ## Commit 56
 - Patch spots where OpenAI API could have leaked (they took it down)
     - Appears to have been in RAG_DEBUG or vector ingest payload or job errors
+
+## Commit 57 
+- refine prompts for evidence retrival web search
