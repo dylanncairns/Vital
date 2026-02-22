@@ -88,7 +88,7 @@ _DAYS_AGO_RE = re.compile(
 _SYMPTOM_CUES_RE = re.compile(
     r"\b("
     r"felt|feel|feeling|tired|fatigued|exhausted|"
-    r"ache|pain|nausea|headache|stomachache|"
+    r"ache|pain|hurt|hurts|hurting|sore|nausea|headache|stomachache|"
     r"dizzy|dizziness|lightheaded|vertigo|"
     r"anxious|anxiety|panic|"
     r"insomnia|can't sleep|cannot sleep|trouble sleeping|"
@@ -204,6 +204,8 @@ _SYMPTOM_SYNONYM_RULES: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\b(queasy|queasiness)\b", re.I), "nausea"),
     (re.compile(r"\b(stomach pain|abdominal pain|stomach ache)\b", re.I), "stomachache"),
     (re.compile(r"\b(head pain|head ache)\b", re.I), "headache"),
+    (re.compile(r"\bhead\s+(?:is\s+)?hurt(?:s|ing)?\b", re.I), "headache"),
+    (re.compile(r"\bmy\s+head\s+hurt(?:s|ing)?\b", re.I), "headache"),
     (re.compile(r"\b(acne spots?|breakouts?|pimples?|zits?)\b", re.I), "acne"),
     (re.compile(r"\b(bloated|bloating|gassy|gas)\b", re.I), "bloating"),
     (re.compile(r"\b(can'?t poop|hard to poop|haven'?t pooped)\b", re.I), "constipation"),
@@ -1239,6 +1241,17 @@ def parse_text_events(text: str, *, local_tz=None) -> list[ParsedEvent]:
             _EXPOSURE_VERBS.search(segment_lower) is not None
             and (_SYMPTOM_CUES_RE.search(segment_lower) is not None or _COMMON_SYMPTOM_TERMS_RE.search(segment_lower) is not None)
         )
+        symptom_signal_mentions = len(_COMMON_SYMPTOM_TERMS_RE.findall(segment_lower)) + len(_SYMPTOM_CUES_RE.findall(segment_lower))
+        time_signal_mentions = (
+            len(_DATE_TOKEN_RE.findall(segment_lower))
+            + len(_TIME_AT_RE.findall(segment_lower))
+            + len(_DAYS_AGO_RE.findall(segment_lower))
+        )
+        has_multi_temporal_symptom_clause = (
+            " and " in f" {segment_lower} "
+            and symptom_signal_mentions >= 2
+            and time_signal_mentions >= 2
+        )
 
         if parsed is not None:
             parsed = _apply_time_context(
@@ -1251,7 +1264,12 @@ def parse_text_events(text: str, *, local_tz=None) -> list[ParsedEvent]:
             if not has_multi_exposure_clause and not has_multiple_exposure_mentions:
                 for expanded in _expand_multi_item_exposure(parsed, segment):
                     _append_if_new(expanded)
-            if not has_mixed_signal and not has_multi_exposure_clause and not has_multiple_exposure_mentions:
+            if (
+                not has_mixed_signal
+                and not has_multi_exposure_clause
+                and not has_multiple_exposure_mentions
+                and not has_multi_temporal_symptom_clause
+            ):
                 continue
         # Fallback for mixed blurbs in one sentence: split into clause-like chunks.
         clauses = [

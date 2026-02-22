@@ -4,10 +4,13 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import tempfile
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from api.db import get_connection
 from ml.insights import list_rag_sync_candidates
@@ -40,8 +43,9 @@ PAPER_DISCOVERY_SCHEMA = {
                         "publication_date": {"type": ["string", "null"]},
                         "source": {"type": ["string", "null"]},
                         "abstract": {"type": ["string", "null"]},
+                        "snippet": {"type": ["string", "null"]},
                     },
-                    "required": ["title", "url", "publication_date", "source", "abstract"],
+                    "required": ["title", "url", "publication_date", "source", "abstract", "snippet"],
                 },
             }
         },
@@ -168,6 +172,7 @@ def _source_hash(*, user_id: int | None, payload: dict[str, Any]) -> str:
         "publication_date": payload.get("publication_date"),
         "source": payload.get("source"),
         "abstract": payload.get("abstract"),
+        "snippet": payload.get("snippet"),
     }
     encoded = json.dumps(material, sort_keys=True, ensure_ascii=False).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
@@ -245,6 +250,138 @@ def _normalize_discovery_query(query: str) -> str:
     return compact[:240].strip()
 
 
+_DISCOVERY_STOPWORDS = {
+    "and",
+    "or",
+    "the",
+    "a",
+    "an",
+    "in",
+    "on",
+    "for",
+    "with",
+    "to",
+    "of",
+    "from",
+    "humans",
+    "human",
+    "adverse",
+    "effect",
+    "effects",
+    "cohort",
+    "trial",
+    "onset",
+    "linked",
+    "interaction",
+    "causes",
+    "side",
+}
+
+
+def _tokenize_terms(value: str | None) -> set[str]:
+    if not value:
+        return set()
+    out: set[str] = set()
+    for raw in value.lower().split():
+        token = "".join(char for char in raw if char.isalnum())
+        if len(token) < 3:
+            continue
+        if token in _DISCOVERY_STOPWORDS:
+            continue
+        out.add(token)
+    return out
+
+
+def _text_contains_any_token(text: str, tokens: set[str]) -> bool:
+    if not text or not tokens:
+        return False
+    normalized = " ".join("".join(char if char.isalnum() else " " for char in text.lower()).split())
+    if not normalized:
+        return False
+    padded = f" {normalized} "
+    return any(f" {token} " in padded for token in tokens)
+
+
+_HIGH_TRUST_SOURCE_TOKENS = {
+    "pubmed",
+    "nih",
+    "nejm",
+    "lancet",
+    "jamanetwork",
+    "bmj",
+    "nature",
+    "science",
+    "wiley",
+    "springer",
+    "oxford",
+    "elsevier",
+}
+
+
+_YEAR_RE = re.compile(r"(19|20)\d{2}")
+
+
+def _extract_year(value: Any) -> int | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    match = _YEAR_RE.search(text)
+    if not match:
+        return None
+    try:
+        year = int(match.group(0))
+    except (TypeError, ValueError):
+        return None
+    if 1900 <= year <= 2100:
+        return year
+    return None
+
+
+def _source_quality_score(*, url: str | None, source: str | None) -> float:
+    score = 0.0
+    host = ""
+    if isinstance(url, str) and url.strip():
+        try:
+            host = (urlparse(url.strip()).hostname or "").lower()
+        except Exception:
+            host = ""
+    haystack = f"{host} {str(source or '').lower()}"
+    for token in _HIGH_TRUST_SOURCE_TOKENS:
+        if token in haystack:
+            score = max(score, 1.0)
+    if host.endswith(".gov"):
+        score = max(score, 0.9)
+    if host.endswith(".edu"):
+        score = max(score, 0.8)
+    return score
+
+
+def _paper_rank_score(
+    *,
+    paper: dict[str, Any],
+    symptom_tokens: set[str],
+    exposure_tokens: set[str],
+) -> float:
+    text = " ".join(
+        str(value or "")
+        for value in [paper.get("title"), paper.get("abstract"), paper.get("snippet")]
+    )
+    text_lower = text.lower()
+    symptom_hits = sum(1 for token in symptom_tokens if token and f" {token} " in f" {text_lower} ")
+    exposure_hits = sum(1 for token in exposure_tokens if token and f" {token} " in f" {text_lower} ")
+    coverage = min(1.0, 0.5 * min(1.0, symptom_hits / max(1, len(symptom_tokens))) + 0.5 * min(1.0, exposure_hits / max(1, len(exposure_tokens))))
+
+    year = _extract_year(paper.get("publication_date"))
+    now_year = datetime.now(tz=timezone.utc).year
+    if year is None:
+        recency = 0.25
+    else:
+        age = max(0, now_year - year)
+        recency = max(0.0, 1.0 - min(age, 20) / 20.0)
+    source_score = _source_quality_score(url=paper.get("url"), source=paper.get("source"))
+    return 0.55 * coverage + 0.30 * recency + 0.15 * source_score
+
+
 def _primary_lag_phrase(lag_bucket_counts: dict[str, int]) -> str | None:
     if not lag_bucket_counts:
         return None
@@ -278,12 +415,26 @@ def _route_context(routes: list[str]) -> str | None:
 def _build_structured_queries_for_candidate(
     *,
     item_name: str | None,
+    secondary_item_name: str | None,
     symptom_name: str,
     ingredient_names: list[str],
     routes: list[str],
     lag_bucket_counts: dict[str, int],
 ) -> list[str]:
-    terms = ingredient_names if ingredient_names else ([item_name] if item_name else [])
+    terms: list[str] = []
+    if ingredient_names:
+        terms.extend(ingredient_names)
+    if item_name and item_name.strip():
+        terms.append(item_name.strip())
+    combo_phrase: str | None = None
+    if (
+        item_name
+        and secondary_item_name
+        and item_name.strip()
+        and secondary_item_name.strip()
+    ):
+        combo_phrase = f"{item_name.strip()} and {secondary_item_name.strip()}"
+        terms.extend([combo_phrase, secondary_item_name.strip()])
     if not terms:
         return []
     route_phrase = _route_context(routes)
@@ -305,6 +456,13 @@ def _build_structured_queries_for_candidate(
             queries.append(f"{term_value} {symptom_name} {route_phrase} humans")
         if lag_phrase:
             queries.append(f"{term_value} {symptom_name} onset {lag_phrase}")
+    if combo_phrase:
+        queries.extend(
+            [
+                f"{combo_phrase} {symptom_name} interaction adverse effect humans",
+                f"{combo_phrase} linked to {symptom_name} cohort",
+            ]
+        )
 
     deduped: list[str] = []
     seen: set[str] = set()
@@ -320,6 +478,8 @@ def _build_structured_queries_for_candidate(
 def _discover_papers_for_query(
     *,
     query: str,
+    symptom_name: str | None = None,
+    exposure_terms: list[str] | None = None,
     max_papers: int = 5,
 ) -> tuple[list[dict[str, Any]], str | None]:
     client = _get_openai_client()
@@ -345,6 +505,8 @@ def _discover_papers_for_query(
             "Prefer peer-reviewed publications and high-quality scientific sources.",
             "Each paper must include title; include URL when available.",
             "abstract should be concise and faithful to source text.",
+            "snippet should capture a short, directly relevant passage from the source.",
+            "Exclude papers that do not clearly discuss the candidate exposure and symptom in humans.",
         ],
     }
     response_obj: Any | None = None
@@ -422,8 +584,36 @@ def _discover_papers_for_query(
                 "publication_date": paper.get("publication_date"),
                 "source": paper.get("source"),
                 "abstract": paper.get("abstract"),
+                "snippet": paper.get("snippet"),
             }
         )
+    symptom_tokens = _tokenize_terms(symptom_name)
+    exposure_tokens: set[str] = set()
+    for term in (exposure_terms or []):
+        exposure_tokens.update(_tokenize_terms(term))
+
+    if symptom_tokens or exposure_tokens:
+        filtered: list[dict[str, Any]] = []
+        for paper in deduped:
+            text = " ".join(
+                str(value or "")
+                for value in [paper.get("title"), paper.get("abstract"), paper.get("snippet")]
+            )
+            symptom_ok = True if not symptom_tokens else _text_contains_any_token(text, symptom_tokens)
+            exposure_ok = True if not exposure_tokens else _text_contains_any_token(text, exposure_tokens)
+            if symptom_ok and exposure_ok:
+                filtered.append(paper)
+        deduped = filtered
+
+    deduped.sort(
+        key=lambda paper: _paper_rank_score(
+            paper=paper,
+            symptom_tokens=symptom_tokens,
+            exposure_tokens=exposure_tokens,
+        ),
+        reverse=True,
+    )
+
     return deduped[:max_papers], None
 
 
@@ -445,13 +635,16 @@ def auto_generate_sources_for_user(
     finally:
         conn.close()
 
-    queries: list[str] = []
+    queries: list[dict[str, Any]] = []
     seen_queries: set[str] = set()
     for candidate in candidates:
         symptom_name = symptom_name_map.get(int(candidate["symptom_id"]))
         if not symptom_name:
             continue
         item_name = item_name_map.get(int(candidate["item_id"]))
+        secondary_item_name = None
+        if candidate.get("secondary_item_id") is not None:
+            secondary_item_name = item_name_map.get(int(candidate["secondary_item_id"]))
         ingredient_names = [
             ingredient_name_map[int(ingredient_id)]
             for ingredient_id in sorted(candidate.get("ingredient_ids", set()))
@@ -459,17 +652,29 @@ def auto_generate_sources_for_user(
         ]
         candidate_queries = _build_structured_queries_for_candidate(
             item_name=item_name,
+            secondary_item_name=secondary_item_name,
             symptom_name=symptom_name,
             ingredient_names=ingredient_names,
             routes=list(candidate.get("routes", [])),
             lag_bucket_counts=dict(candidate.get("lag_bucket_counts", {})),
         )
+        exposure_terms = list(ingredient_names)
+        if item_name:
+            exposure_terms.append(item_name)
+        if secondary_item_name:
+            exposure_terms.append(secondary_item_name)
         for query in candidate_queries:
             key = query.lower()
             if key in seen_queries:
                 continue
             seen_queries.add(key)
-            queries.append(query)
+            queries.append(
+                {
+                    "query": query,
+                    "symptom_name": symptom_name,
+                    "exposure_terms": exposure_terms,
+                }
+            )
 
     if not queries:
         return [], [{"query": "", "error": "No literature queries built from candidates."}]
@@ -477,9 +682,17 @@ def auto_generate_sources_for_user(
     source_records: list[dict[str, Any]] = []
     written_keys: set[tuple[str, str]] = set()
     errors: list[dict[str, str]] = []
-    for query in queries[:max_queries]:
+    for query_info in queries[:max_queries]:
+        query = str(query_info["query"])
+        query_symptom = str(query_info.get("symptom_name") or "")
+        query_exposure_terms = list(query_info.get("exposure_terms") or [])
         normalized_query = _normalize_discovery_query(query)
-        papers, error = _discover_papers_for_query(query=normalized_query, max_papers=max_papers_per_query)
+        papers, error = _discover_papers_for_query(
+            query=normalized_query,
+            symptom_name=query_symptom,
+            exposure_terms=query_exposure_terms,
+            max_papers=max_papers_per_query,
+        )
         if error:
             errors.append({"query": query, "error": error})
             continue
@@ -502,6 +715,7 @@ def auto_generate_sources_for_user(
                 "publication_date": paper.get("publication_date"),
                 "source": paper.get("source"),
                 "abstract": paper.get("abstract"),
+                "snippet": paper.get("snippet"),
             }
             source_records.append(
                 {
@@ -545,13 +759,16 @@ def ingest_sources_for_candidates(
     finally:
         conn.close()
 
-    queries: list[str] = []
+    queries: list[dict[str, Any]] = []
     seen_queries: set[str] = set()
     for candidate in candidates:
         symptom_name = symptom_name_map.get(int(candidate["symptom_id"]))
         if not symptom_name:
             continue
         item_name = item_name_map.get(int(candidate["item_id"]))
+        secondary_item_name = None
+        if candidate.get("secondary_item_id") is not None:
+            secondary_item_name = item_name_map.get(int(candidate["secondary_item_id"]))
         ingredient_names = [
             ingredient_name_map[int(ingredient_id)]
             for ingredient_id in sorted(candidate.get("ingredient_ids", set()))
@@ -559,17 +776,29 @@ def ingest_sources_for_candidates(
         ]
         candidate_queries = _build_structured_queries_for_candidate(
             item_name=item_name,
+            secondary_item_name=secondary_item_name,
             symptom_name=symptom_name,
             ingredient_names=ingredient_names,
             routes=list(candidate.get("routes", [])),
             lag_bucket_counts=dict(candidate.get("lag_bucket_counts", {})),
         )
+        exposure_terms = list(ingredient_names)
+        if item_name:
+            exposure_terms.append(item_name)
+        if secondary_item_name:
+            exposure_terms.append(secondary_item_name)
         for query in candidate_queries:
             key = query.lower()
             if key in seen_queries:
                 continue
             seen_queries.add(key)
-            queries.append(query)
+            queries.append(
+                {
+                    "query": query,
+                    "symptom_name": symptom_name,
+                    "exposure_terms": exposure_terms,
+                }
+            )
             if len(queries) >= max_queries:
                 break
         if len(queries) >= max_queries:
@@ -591,9 +820,17 @@ def ingest_sources_for_candidates(
     generated_keys: set[tuple[str, str]] = set()
     errors: list[dict[str, str]] = []
 
-    for query in queries:
+    for query_info in queries:
+        query = str(query_info["query"])
+        query_symptom = str(query_info.get("symptom_name") or "")
+        query_exposure_terms = list(query_info.get("exposure_terms") or [])
         normalized_query = _normalize_discovery_query(query)
-        papers, error = _discover_papers_for_query(query=normalized_query, max_papers=max_papers_per_query)
+        papers, error = _discover_papers_for_query(
+            query=normalized_query,
+            symptom_name=query_symptom,
+            exposure_terms=query_exposure_terms,
+            max_papers=max_papers_per_query,
+        )
         if error:
             errors.append({"query": query, "error": error})
             continue
@@ -616,6 +853,7 @@ def ingest_sources_for_candidates(
                 "publication_date": paper.get("publication_date"),
                 "source": paper.get("source"),
                 "abstract": paper.get("abstract"),
+                "snippet": paper.get("snippet"),
             }
             generated_records.append(
                 {

@@ -355,6 +355,238 @@ class RagEvidenceTests(unittest.TestCase):
         self.assertGreaterEqual(result["claims_added"], 2)
         self.assertEqual([int(row["item_id"]) for row in rows], [30, 31])
 
+    def test_enrich_claims_combo_falls_back_to_single_item_retrieval(self) -> None:
+        self._exec("INSERT INTO items (id, name, category) VALUES (40, 'coffee', 'food')")
+        self._exec("INSERT INTO items (id, name, category) VALUES (41, 'poor sleep', 'lifestyle')")
+
+        def fake_llm_retriever(
+            *,
+            symptom_name: str,
+            ingredient_names: list[str],
+            item_name: str | None,
+            secondary_item_name: str | None = None,
+            routes: list[str] | None = None,
+            lag_bucket_counts: dict[str, int] | None = None,
+            max_evidence_rows: int,
+        ) -> list[dict]:
+            _ = (symptom_name, ingredient_names, routes, lag_bucket_counts, max_evidence_rows)
+            if secondary_item_name is not None:
+                return []
+            if item_name == "coffee":
+                return [
+                    {
+                        "title": "Coffee and headache association",
+                        "url": "https://example.org/coffee-headache",
+                        "publication_date": "2024",
+                        "source": "Journal A",
+                        "item_name": "coffee",
+                        "ingredient_name": None,
+                        "symptom_name": "headache",
+                        "summary": "Coffee intake was associated with headache patterns.",
+                        "snippet": "Coffee intake was associated with headache patterns.",
+                        "evidence_polarity_and_strength": 1,
+                    }
+                ]
+            if item_name == "poor sleep":
+                return [
+                    {
+                        "title": "Sleep disruption and headache",
+                        "url": "https://example.org/sleep-headache",
+                        "publication_date": "2024",
+                        "source": "Journal B",
+                        "item_name": "poor sleep",
+                        "ingredient_name": None,
+                        "symptom_name": "headache",
+                        "summary": "Poor sleep was associated with headache burden.",
+                        "snippet": "Poor sleep was associated with headache burden.",
+                        "evidence_polarity_and_strength": 1,
+                    }
+                ]
+            return []
+
+        conn = api.db.get_connection()
+        try:
+            result = enrich_claims_for_candidates(
+                conn,
+                candidates=[{"item_id": 40, "secondary_item_id": 41, "symptom_id": 2, "ingredient_ids": set()}],
+                ingredient_name_map={},
+                symptom_name_map={2: "headache"},
+                item_name_map={40: "coffee", 41: "poor sleep"},
+                online_enabled=True,
+                max_papers_per_query=1,
+                llm_retriever=fake_llm_retriever,
+            )
+            conn.commit()
+            rows = conn.execute(
+                """
+                SELECT item_id, citation_url
+                FROM claims
+                WHERE symptom_id = 2
+                  AND citation_url IN ('https://example.org/coffee-headache', 'https://example.org/sleep-headache')
+                ORDER BY item_id, citation_url
+                """
+            ).fetchall()
+        finally:
+            conn.close()
+
+        self.assertGreaterEqual(result["claims_added"], 2)
+        self.assertEqual([int(row["item_id"]) for row in rows], [40, 41])
+
+    def test_enrich_claims_with_ingredients_still_uses_item_context_when_missing_rows(self) -> None:
+        self._exec("INSERT INTO items (id, name, category) VALUES (50, 'energy drink', 'food')")
+        self._exec("INSERT INTO ingredients (id, name, description) VALUES (50, 'caffeine', 'd')")
+        self._exec("INSERT INTO items_ingredients (item_id, ingredient_id) VALUES (50, 50)")
+        self._exec(
+            """
+            INSERT INTO papers (id, title, url, abstract, publication_date, source, ingested_at)
+            VALUES (50, 'Seed caffeine headache', 'https://example.org/seed-caffeine', 'seed', '2023-01-01', 'seed', '2026-01-01T00:00:00Z')
+            """
+        )
+        conn = api.db.get_connection()
+        try:
+            # Existing ingredient claim means missing_ingredient_names is empty.
+            ingest_paper_claim_chunks(
+                conn,
+                paper_id=50,
+                item_id=None,
+                ingredient_id=50,
+                symptom_id=2,
+                summary="seed ingredient claim",
+                evidence_polarity_and_strength=1,
+                citation_title="Seed caffeine headache",
+                citation_url="https://example.org/seed-caffeine",
+                source_text="caffeine and headache seed text",
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        def fake_llm_retriever(
+            *,
+            symptom_name: str,
+            ingredient_names: list[str],
+            item_name: str | None,
+            secondary_item_name: str | None = None,
+            routes: list[str] | None = None,
+            lag_bucket_counts: dict[str, int] | None = None,
+            max_evidence_rows: int,
+        ) -> list[dict]:
+            _ = (
+                symptom_name,
+                ingredient_names,
+                secondary_item_name,
+                routes,
+                lag_bucket_counts,
+                max_evidence_rows,
+            )
+            if item_name != "energy drink":
+                return []
+            return [
+                {
+                    "title": "Energy drink exposure and headache",
+                    "url": "https://example.org/energy-drink-headache",
+                    "publication_date": "2024",
+                    "source": "Journal C",
+                    "item_name": "energy drink",
+                    "ingredient_name": None,
+                    "symptom_name": "headache",
+                    "summary": "Energy drink exposure associated with headache.",
+                    "snippet": "Energy drink exposure associated with headache.",
+                    "evidence_polarity_and_strength": 1,
+                }
+            ]
+
+        conn = api.db.get_connection()
+        try:
+            result = enrich_claims_for_candidates(
+                conn,
+                candidates=[{"item_id": 50, "symptom_id": 2, "ingredient_ids": {50}}],
+                ingredient_name_map={50: "caffeine"},
+                symptom_name_map={2: "headache"},
+                item_name_map={50: "energy drink"},
+                online_enabled=True,
+                max_papers_per_query=1,
+                llm_retriever=fake_llm_retriever,
+            )
+            conn.commit()
+            row = conn.execute(
+                """
+                SELECT item_id, ingredient_id, citation_url
+                FROM claims
+                WHERE symptom_id = 2
+                  AND citation_url = 'https://example.org/energy-drink-headache'
+                ORDER BY id DESC
+                LIMIT 1
+                """
+            ).fetchone()
+        finally:
+            conn.close()
+
+        self.assertGreaterEqual(result["claims_added"], 1)
+        assert row is not None
+        self.assertEqual(int(row["item_id"]), 50)
+        self.assertIsNone(row["ingredient_id"])
+
+    def test_enrich_claims_quality_floor_rejects_low_quality_rows(self) -> None:
+        self._exec("INSERT INTO items (id, name, category) VALUES (60, 'soda', 'food')")
+
+        def fake_llm_retriever(
+            *,
+            symptom_name: str,
+            ingredient_names: list[str],
+            item_name: str | None,
+            secondary_item_name: str | None = None,
+            routes: list[str] | None = None,
+            lag_bucket_counts: dict[str, int] | None = None,
+            max_evidence_rows: int,
+        ) -> list[dict]:
+            _ = (symptom_name, ingredient_names, item_name, secondary_item_name, routes, lag_bucket_counts, max_evidence_rows)
+            return [
+                {
+                    "title": "Weak row",
+                    "url": "https://example.org/weak",
+                    "publication_date": "2024",
+                    "source": "unknown",
+                    "item_name": "soda",
+                    "ingredient_name": None,
+                    "symptom_name": "headache",
+                    "summary": "uncertain statement",
+                    "snippet": "short text",
+                    "evidence_polarity_and_strength": 0.01,
+                    "study_design": "other",
+                    "study_quality_score": 0.05,
+                    "population_match": 0.05,
+                    "temporality_match": 0.05,
+                    "risk_of_bias": 0.95,
+                    "llm_confidence": 0.05,
+                    "relevance": 0.01,
+                }
+            ]
+
+        conn = api.db.get_connection()
+        try:
+            result = enrich_claims_for_candidates(
+                conn,
+                candidates=[{"item_id": 60, "symptom_id": 2, "ingredient_ids": set()}],
+                ingredient_name_map={},
+                symptom_name_map={2: "headache"},
+                item_name_map={60: "soda"},
+                online_enabled=True,
+                max_papers_per_query=1,
+                llm_retriever=fake_llm_retriever,
+            )
+            conn.commit()
+            c = conn.execute(
+                "SELECT COUNT(*) AS c FROM claims WHERE citation_url = 'https://example.org/weak'"
+            ).fetchone()
+        finally:
+            conn.close()
+
+        self.assertEqual(int(result.get("claims_added", 0)), 0)
+        self.assertGreaterEqual(int(result.get("rows_rejected_quality", 0)), 1)
+        assert c is not None
+        self.assertEqual(int(c["c"]), 0)
+
     def test_llm_retrieval_filters_to_grounded_source_urls(self) -> None:
         class FakeResponse:
             def model_dump(self):

@@ -1185,6 +1185,50 @@ def _normalize_name_to_id_lookup(conn, table: str, alias_table: str, id_col: str
     return mapping
 
 
+def _claim_row_passes_quality_floor(row: dict[str, Any]) -> bool:
+    min_relevance = max(0.0, min(1.0, float(os.getenv("RAG_MIN_ONLINE_ROW_RELEVANCE", "0.10"))))
+    min_quality = max(0.0, min(1.0, float(os.getenv("RAG_MIN_ONLINE_ROW_QUALITY", "0.35"))))
+    min_population = max(0.0, min(1.0, float(os.getenv("RAG_MIN_ONLINE_ROW_POPULATION_MATCH", "0.30"))))
+    min_temporality = max(0.0, min(1.0, float(os.getenv("RAG_MIN_ONLINE_ROW_TEMPORALITY_MATCH", "0.25"))))
+    min_confidence = max(0.0, min(1.0, float(os.getenv("RAG_MIN_ONLINE_ROW_LLM_CONFIDENCE", "0.35"))))
+    max_bias = max(0.0, min(1.0, float(os.getenv("RAG_MAX_ONLINE_ROW_RISK_OF_BIAS", "0.90"))))
+    min_abs_direction = max(0.0, min(1.0, float(os.getenv("RAG_MIN_ONLINE_ROW_ABS_DIRECTION", "0.04"))))
+    min_snippet_chars = max(20, int(float(os.getenv("RAG_MIN_ONLINE_ROW_SNIPPET_CHARS", "40"))))
+
+    snippet = str(row.get("snippet") or "")
+    relevance = max(0.0, min(1.0, float(row.get("relevance") or 0.0)))
+    study_quality = _bounded_metric(row.get("study_quality_score"))
+    population_match = _bounded_metric(row.get("population_match"))
+    temporality_match = _bounded_metric(row.get("temporality_match"))
+    risk_of_bias = _bounded_metric(row.get("risk_of_bias"))
+    llm_confidence = _bounded_metric(row.get("llm_confidence"))
+    direction = max(-1.0, min(1.0, float(row.get("evidence_polarity_and_strength") or 0.0)))
+
+    composite = (
+        0.30 * relevance
+        + 0.25 * study_quality
+        + 0.15 * population_match
+        + 0.10 * temporality_match
+        + 0.10 * llm_confidence
+        + 0.10 * (1.0 - risk_of_bias)
+    )
+    if len(snippet.strip()) < min_snippet_chars:
+        return False
+    if abs(direction) < min_abs_direction:
+        return False
+    if risk_of_bias > max_bias:
+        return False
+    if composite >= min_quality:
+        return True
+    # Soft pass path for sparse candidates if several key metrics clear floors.
+    return (
+        relevance >= min_relevance
+        and llm_confidence >= min_confidence
+        and population_match >= min_population
+        and temporality_match >= min_temporality
+    )
+
+
 def sync_claims_for_candidates(
     conn,
     *,
@@ -1214,6 +1258,10 @@ def sync_claims_for_candidates(
 
     papers_added = 0
     claims_added = 0
+    rows_rejected_quality = 0
+    retrieval_stage_attempts = 0
+    retrieval_stage_rows = 0
+    candidates_without_rows = 0
 
     if online_enabled:
         now_iso = datetime.now(tz=timezone.utc).isoformat()
@@ -1237,12 +1285,29 @@ def sync_claims_for_candidates(
                 if ingredient_id in ingredient_name_map
             ]
             llm_rows: list[dict[str, Any]] = []
+            candidate_rows_raw = 0
             def _call_llm_retriever(*, ingredient_names_arg: list[str]) -> list[dict[str, Any]]:
                 kwargs = {
                     "symptom_name": symptom_name,
                     "ingredient_names": ingredient_names_arg,
                     "item_name": item_name,
                     "secondary_item_name": secondary_item_name,
+                    "routes": sorted(candidate.get("routes", [])),
+                    "lag_bucket_counts": candidate.get("lag_bucket_counts"),
+                    "max_evidence_rows": max_papers_per_query,
+                }
+                try:
+                    return llm_retriever(**kwargs)
+                except TypeError:
+                    kwargs.pop("secondary_item_name", None)
+                    return llm_retriever(**kwargs)
+
+            def _call_llm_retriever_relaxed_for_item(*, item_name_arg: str) -> list[dict[str, Any]]:
+                kwargs = {
+                    "symptom_name": symptom_name,
+                    "ingredient_names": [],
+                    "item_name": item_name_arg,
+                    "secondary_item_name": None,
                     "routes": sorted(candidate.get("routes", [])),
                     "lag_bucket_counts": candidate.get("lag_bucket_counts"),
                     "max_evidence_rows": max_papers_per_query,
@@ -1268,13 +1333,57 @@ def sync_claims_for_candidates(
                     if has_existing is None and int(ingredient_id) in ingredient_name_map:
                         missing_ingredient_names.append(str(ingredient_name_map[int(ingredient_id)]))
                 for ingredient_name in missing_ingredient_names:
+                    retrieval_stage_attempts += 1
                     ingredient_rows = _call_llm_retriever(ingredient_names_arg=[ingredient_name])
+                    candidate_rows_raw += len(ingredient_rows)
+                    retrieval_stage_rows += len(ingredient_rows)
                     llm_rows.extend(ingredient_rows)
+                # When ingredient coverage exists globally but does not yield useful evidence for this item context,
+                # still query with item-level context as a first-line retrieval path.
+                if not llm_rows and item_name:
+                    retrieval_stage_attempts += 1
+                    llm_rows = _call_llm_retriever(ingredient_names_arg=[])
+                    candidate_rows_raw += len(llm_rows)
+                    retrieval_stage_rows += len(llm_rows)
             else:
+                retrieval_stage_attempts += 1
                 llm_rows = _call_llm_retriever(ingredient_names_arg=ingredient_names)
+                candidate_rows_raw += len(llm_rows)
+                retrieval_stage_rows += len(llm_rows)
+                # Combo retrieval is intentionally strict and may return no rows.
+                # Fallback to single-item retrieval so per-item claims can still be acquired.
+                if not llm_rows and secondary_item_id is not None:
+                    relaxed_rows: list[dict[str, Any]] = []
+                    if item_name:
+                        retrieval_stage_attempts += 1
+                        for row in _call_llm_retriever_relaxed_for_item(item_name_arg=str(item_name)):
+                            row_copy = dict(row)
+                            row_copy["_force_item_id"] = int(candidate_item_id)
+                            relaxed_rows.append(row_copy)
+                    if secondary_item_name:
+                        retrieval_stage_attempts += 1
+                        for row in _call_llm_retriever_relaxed_for_item(item_name_arg=str(secondary_item_name)):
+                            row_copy = dict(row)
+                            row_copy["_force_item_id"] = int(secondary_item_id)
+                            relaxed_rows.append(row_copy)
+                    llm_rows = relaxed_rows
+                    candidate_rows_raw += len(llm_rows)
+                    retrieval_stage_rows += len(llm_rows)
+            if candidate_rows_raw == 0:
+                candidates_without_rows += 1
             for row in llm_rows:
+                if not _claim_row_passes_quality_floor(row):
+                    rows_rejected_quality += 1
+                    continue
                 row_ingredient_id: int | None = None
                 target_item_ids: list[int | None] = []
+                forced_item_id_raw = row.get("_force_item_id")
+                forced_item_id: int | None = None
+                try:
+                    if forced_item_id_raw is not None:
+                        forced_item_id = int(forced_item_id_raw)
+                except (TypeError, ValueError):
+                    forced_item_id = None
                 if ingredient_ids:
                     ingredient_name = row.get("ingredient_name")
                     if isinstance(ingredient_name, str) and ingredient_name.strip():
@@ -1285,9 +1394,12 @@ def sync_claims_for_candidates(
                     if row_ingredient_id is None:
                         target_item_ids = [candidate_item_id]
                 else:
-                    target_item_ids = [candidate_item_id]
-                    if secondary_item_id is not None:
-                        target_item_ids.append(int(secondary_item_id))
+                    if forced_item_id is not None:
+                        target_item_ids = [forced_item_id]
+                    else:
+                        target_item_ids = [candidate_item_id]
+                        if secondary_item_id is not None:
+                            target_item_ids.append(int(secondary_item_id))
                 row_symptom_id = symptom_id
 
                 paper_url = row.get("url")
@@ -1364,7 +1476,15 @@ def sync_claims_for_candidates(
                         source_text=snippet,
                     )
 
-    return {"queries_built": len(queries), "papers_added": papers_added, "claims_added": claims_added}
+    return {
+        "queries_built": len(queries),
+        "papers_added": papers_added,
+        "claims_added": claims_added,
+        "rows_rejected_quality": rows_rejected_quality,
+        "retrieval_stage_attempts": retrieval_stage_attempts,
+        "retrieval_stage_rows": retrieval_stage_rows,
+        "candidates_without_rows": candidates_without_rows,
+    }
 
 
 def enrich_claims_for_candidates(

@@ -377,3 +377,14 @@
 
 ## Commits 53-54
 - update production with retrained model artifacts
+
+## Commit 55
+- expanded symptom name parsing and temporal clause handling 
+- improved evidence retrival
+    - queries include item name even when ingredient names exist
+    - combo candidates are no longer priority over individual symptom-exposure
+    - rag sync still now runs item-context retrival instead of returning empty when ingreidnets exist
+    - updated corresponding tests
+- vector ingest includes item name + ingredients to broaden evidence acquisition per candidate
+- added evidence quality floor gating so weak citation rows arent ingested
+- aiming to increase relevant evidence acquisition and reduce weak evidence ingestion
