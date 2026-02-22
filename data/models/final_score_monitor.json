@@ -1,5 +1,5 @@
 {
-  "created_at": "2026-02-16T20:02:21.992610+00:00",
+  "created_at": "2026-02-22T00:10:05.824668+00:00",
   "dataset_source": "hybrid",
   "guardrails": {
     "runtime_max_high_conf_ratio": 0.9,
@@ -61,27 +61,44 @@
       },
       "promoted": true,
       "reason": "promote_passed_guardrails"
+    },
+    {
+      "created_at": "2026-02-22T00:10:05.824668+00:00",
+      "dataset_source": "hybrid",
+      "metrics": {
+        "auc": 0.5,
+        "average_precision": 0.01202168098145599,
+        "brier": 0.00014836771181593093,
+        "high_conf_ratio": 0.0,
+        "mean_probability": 0.01202168098145599,
+        "negatives": 31.0,
+        "positives": 0.0,
+        "rows": 31.0,
+        "std_probability": 0.0019613511149282146
+      },
+      "promoted": false,
+      "reason": "guardrail_fail_auc_floor"
     }
   ],
   "metrics": {
-    "auc": 1.0,
-    "average_precision": 1.0,
-    "brier": 5.292108637619439e-05,
-    "high_conf_ratio": 0.5333333333333333,
-    "mean_probability": 0.5328322835258674,
-    "negatives": 35.0,
-    "positives": 40.0,
-    "rows": 75.0,
-    "std_probability": 0.4916656987936307
+    "auc": 0.5,
+    "average_precision": 0.01202168098145599,
+    "brier": 0.00014836771181593093,
+    "high_conf_ratio": 0.0,
+    "mean_probability": 0.01202168098145599,
+    "negatives": 31.0,
+    "positives": 0.0,
+    "rows": 31.0,
+    "std_probability": 0.0019613511149282146
   },
-  "promoted": true,
-  "reason": "promote_passed_guardrails",
+  "promoted": false,
+  "reason": "guardrail_fail_auc_floor",
   "versions": {
     "decision_thresholds": {
       "exists": true,
-      "mtime": "2026-02-16T20:02:21.821703+00:00",
-      "sha256": "30a2eb14aa4b9cba7abf94f5ecb9add68c090f8f422b167e50a9b10768a06a68",
-      "size_bytes": 771
+      "mtime": "2026-02-22T00:10:05.751152+00:00",
+      "sha256": "d74597447c1f53664e28fc237eb092d6cac4e3160fd2c80f455531fb9afa275e",
+      "size_bytes": 1023
     },
     "fusion_calibrator": {
       "exists": true,
@@ -91,9 +108,9 @@
     },
     "fusion_model": {
       "exists": true,
-      "mtime": "2026-02-16T20:02:21.614965+00:00",
-      "sha256": "e8fd5c1958f32e63622eb0ca03fbca484edc1a138755408302f79c6786f1f2fe",
-      "size_bytes": 21213
+      "mtime": "2026-02-22T00:10:05.750509+00:00",
+      "sha256": "c569dfe1db59c69f9ec13b9a3536e142c38dd607116be114df61e1028727258c",
+      "size_bytes": 16519
     },
     "score_guardrails": {
       "exists": true,

@@ -1,24 +1,8 @@
 {
-  "created_at": "2026-02-22T00:10:05.751510+00:00",
+  "created_at": "2026-02-22T00:10:05.751275+00:00",
   "dataset_source": "hybrid",
   "phase": "seed_bootstrap",
-  "threshold_used": 0.17102833271026613,
-  "users_in_validation": 2,
-  "per_user": {
-    "4": {
-      "count": 1.0,
-      "precision": 1.0,
-      "recall": 1.0,
-      "avg_probability": 0.17102833271026613
-    },
-    "5": {
-      "count": 3.0,
-      "precision": 0.6666666666666666,
-      "recall": 1.0,
-      "avg_probability": 0.3481529521942139
-    }
-  },
-  "promotion": {
+  "promotion_metrics": {
     "candidate": {
       "count": 4.0,
       "precision": 0.75,
