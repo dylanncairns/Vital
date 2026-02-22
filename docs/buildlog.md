@@ -401,3 +401,6 @@
     - was causing failed jobs as Postgres will not store nul byte text chars
 - added demultiply functionality to rag.py during evidence aggregation, preventing duplicate claims/citations from being written into insights
     - collapses identical rows which affects scoring / evidence quality metrics
+
+## Commit 59
+- widen base of knowledge and rules for text ingestion

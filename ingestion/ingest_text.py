@@ -38,7 +38,14 @@ class ParsedEvent:
 
 # Regex for identifying different parts of logged entries within text blurb
 _EXPOSURE_VERBS = re.compile(
-    r"\b(ate|eat|eaten|eating|drank|drink|drinking|used|use|using|apply|applied|took|take|taking|swallowed|ingested|smoked)\b",
+    r"\b("
+    r"ate|eat|eaten|eating|snacked|snack|snacking|"
+    r"drank|drink|drinking|sipped|sip|sipping|"
+    r"used|use|using|apply|applied|applying|rubbed|rub|rubbing|"
+    r"took|take|taking|swallowed|swallow|swallowing|ingested|ingest|ingesting|"
+    r"smoked|smoke|smoking|vaped|vape|vaping|inhaled|inhale|inhaling|"
+    r"injected|inject|injecting"
+    r")\b",
     re.I,
 )
 _CONTEXT_EXPOSURE_RE = re.compile(
@@ -88,23 +95,30 @@ _DAYS_AGO_RE = re.compile(
 _SYMPTOM_CUES_RE = re.compile(
     r"\b("
     r"felt|feel|feeling|tired|fatigued|exhausted|"
-    r"ache|pain|hurt|hurts|hurting|sore|nausea|headache|stomachache|"
-    r"dizzy|dizziness|lightheaded|vertigo|"
+    r"ache|pain|hurt|hurts|hurting|sore|burning|pressure|tightness|nausea|headache|stomachache|"
+    r"dizzy|dizziness|lightheaded|light-headed|vertigo|faint|fainting|"
     r"anxious|anxiety|panic|"
     r"insomnia|can't sleep|cannot sleep|trouble sleeping|"
     r"brain fog|memory|remember|forget|forgetful|concentrate|focus|"
-    r"bloating|bloated|constipation|diarrhea|"
+    r"bloating|bloated|constipation|diarrhea|heartburn|reflux|gerd|acid reflux|indigestion|"
+    r"palpitations?|racing heart|fast heart rate|tachycardia|"
+    r"shortness of breath|breathless|wheeze|wheezing|"
+    r"chest pain|chest tightness|"
+    r"congestion|congested|runny nose|stuffy nose|sinus|"
+    r"numb|numbness|tingling|pins and needles|"
+    r"joint pain|back pain|muscle pain|body aches|"
     r"rash|itch|itchy|hives|acne|breakout|"
-    r"cough|fever|sore throat"
+    r"cough|fever|sore throat|chills"
     r")\b",
     re.I,
 )
 _HAD_OBJECT_RE = re.compile(r"\bhad\s+(?:a|an|some|the)?\s*[a-z]", re.I)
-_MEAL_CONTEXT_RE = re.compile(r"\b(breakfast|lunch|dinner|ate|eaten|drank|drink)\b", re.I)
+_MEAL_CONTEXT_RE = re.compile(r"\b(breakfast|lunch|dinner|snack|snacked|ate|eaten|drank|drink)\b", re.I)
 _LIFESTYLE_EXPOSURE_RE = re.compile(
     r"\b("
     r"poor sleep|bad sleep|no sleep|sleep deprivation|sleep deprived|insufficient sleep|"
-    r"long shift|overnight shift|jet lag|high stress|stressed|overworked|work stress"
+    r"long shift|overnight shift|jet lag|high stress|stressed|overworked|work stress|"
+    r"all[- ]?nighter|pulled an all nighter|dehydrated|dehydration|fasting|skipped (?:a )?meal"
     r")\b",
     re.I,
 )
@@ -175,6 +189,12 @@ _LOW_SIGNAL_TOKENS = {
 _COMMON_SYMPTOM_TERMS_RE = re.compile(
     r"\b("
     r"headache|migraine|nausea|vomit|vomiting|stomachache|stomach pain|"
+    r"heartburn|acid reflux|reflux|gerd|indigestion|dyspepsia|"
+    r"chest pain|chest tightness|shortness of breath|breathlessness|wheeze|wheezing|"
+    r"palpitations?|tachycardia|racing heart|"
+    r"congestion|runny nose|stuffy nose|sinus|sinus pain|sinus pressure|"
+    r"numbness|tingling|pins and needles|"
+    r"joint pain|back pain|muscle pain|body ache|body aches|chills|"
     r"high blood pressure|blood pressure|hypertension|"
     r"acne|rash|itch|itchy|hives|fatigue|tired|brain fog|"
     r"diarrhea|constipation|bloat|bloating|cramp|cramps|"
@@ -202,6 +222,23 @@ _SYMPTOM_SYNONYM_RULES: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\b(throwing up|threw up|vomit(?:ing)?)\b", re.I), "vomiting"),
     (re.compile(r"\b(feel|feeling)\s+sick\b", re.I), "nausea"),
     (re.compile(r"\b(queasy|queasiness)\b", re.I), "nausea"),
+    (re.compile(r"\b(upset stomach|sour stomach|stomach upset)\b", re.I), "stomachache"),
+    (re.compile(r"\b(heartburn|acid reflux|acid[- ]?reflux|gerd)\b", re.I), "heartburn"),
+    (re.compile(r"\b(indigestion|dyspepsia)\b", re.I), "heartburn"),
+    (re.compile(r"\b(acid(?:ic)?\s+burn(?:ing)?\s+in\s+(?:my\s+)?chest)\b", re.I), "heartburn"),
+    (re.compile(r"\b(burning\s+(?:in\s+)?(?:my\s+)?chest(?:\s+after eating)?)\b", re.I), "heartburn"),
+    (re.compile(r"\b(reflux(?:ing)?|regurgitation)\b", re.I), "heartburn"),
+    (re.compile(r"\b(chest pain|pain in (?:my\s+)?chest)\b", re.I), "chest pain"),
+    (re.compile(r"\b(chest tightness|tight chest)\b", re.I), "chest tightness"),
+    (re.compile(r"\b(short of breath|shortness of breath|breathless(?:ness)?)\b", re.I), "shortness of breath"),
+    (re.compile(r"\b(wheez(?:e|ing)|wheezy)\b", re.I), "shortness of breath"),
+    (re.compile(r"\b(heart racing|racing heart|rapid heartbeat|fast heart rate|palpitations?)\b", re.I), "palpitations"),
+    (re.compile(r"\b(stuffy nose|runny nose|nasal congestion|congested nose)\b", re.I), "congestion"),
+    (re.compile(r"\b(sinus pressure|sinus pain)\b", re.I), "congestion"),
+    (re.compile(r"\b(pins and needles|tingly|tingling|numbness|numb)\b", re.I), "tingling"),
+    (re.compile(r"\b(lower back pain|upper back pain|back pain)\b", re.I), "back pain"),
+    (re.compile(r"\b(joint aches?|joint pain)\b", re.I), "joint pain"),
+    (re.compile(r"\b(muscle aches?|muscle pain|body aches?)\b", re.I), "muscle pain"),
     (re.compile(r"\b(stomach pain|abdominal pain|stomach ache)\b", re.I), "stomachache"),
     (re.compile(r"\b(head pain|head ache)\b", re.I), "headache"),
     (re.compile(r"\bhead\s+(?:is\s+)?hurt(?:s|ing)?\b", re.I), "headache"),
@@ -214,6 +251,7 @@ _SYMPTOM_SYNONYM_RULES: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\b(hives?|welts?)\b", re.I), "hives"),
     (re.compile(r"\b(sore throat|throat pain)\b", re.I), "sore throat"),
     (re.compile(r"\b(high bp|elevated blood pressure|hypertension)\b", re.I), "high blood pressure"),
+    (re.compile(r"\b(chills|shivering)\b", re.I), "fever"),
 ]
 
 _ABS_MONTH_DATE_RE = re.compile(
@@ -623,15 +661,15 @@ def _infer_route(text: str) -> str:
         return "proximity_environment"
     if _AT_PLACE_EXPOSURE_RE.search(t):
         return "proximity_environment"
-    if re.search(r"\b(smoked|vaped|inhaled|inhale)\b", t):
+    if re.search(r"\b(smoked|smoke|vaped|vape|inhaled|inhale|inhaling)\b", t):
         return "inhalation"
-    if re.search(r"\b(applied|apply|rubbed|cream|lotion|ointment|topical|used on)\b", t):
+    if re.search(r"\b(applied|apply|applying|rubbed|rub|rubbing|cream|lotion|ointment|topical|used on)\b", t):
         return "topical"
-    if re.search(r"\b(injected|inject|shot|iv)\b", t):
+    if re.search(r"\b(injected|inject|injecting|shot|iv)\b", t):
         return "injection"
     if _MEAL_CONTEXT_RE.search(t) and re.search(r"\b(had|have|having)\b", t):
         return "ingestion"
-    if re.search(r"\b(ate|eat|eaten|eating|drank|drink|drinking|took|take|taking|used|use|using|swallowed|ingested)\b", t):
+    if re.search(r"\b(ate|eat|eaten|eating|snacked|snack|snacking|drank|drink|drinking|sipped|sip|sipping|took|take|taking|used|use|using|swallowed|swallow|ingested|ingest)\b", t):
         return "ingestion"
     if _HAD_OBJECT_RE.search(t) and _COMMON_SYMPTOM_TERMS_RE.search(t) is None:
         return "ingestion"
@@ -642,7 +680,7 @@ def _split_exposure_items(text: str) -> list[str]:
     # Extract likely item phrase after ingestion verb and split list-like food entries.
     lower = text.lower()
     match = re.search(
-        r"\b(ate|eat|eaten|eating|drank|drink|drinking|took|take|taking|used|use|using|swallowed|ingested|had|have|having)\b",
+        r"\b(ate|eat|eaten|eating|snacked|snack|snacking|drank|drink|drinking|sipped|sip|sipping|took|take|taking|used|use|using|swallowed|swallow|ingested|ingest|had|have|having)\b",
         lower,
     )
     if not match:
@@ -727,7 +765,7 @@ def _clean_candidate_text(text: str) -> str:
     value = re.sub(r"\b(i|we|also|then|so|when|and|at|about|this|that|in|for|on|to|of|from|by|went|visit|visited|did|do|done|after|before|during|while|because|since|got|my)\b", " ", value)
     value = re.sub(r"\b(was|were|is|am|been|being)\b", " ", value)
     value = re.sub(
-        r"\b(ate|eat|eaten|eating|drank|drink|drinking|used|use|using|apply|applied|took|take|taking|smoked|felt|feel|had|have|having)\b",
+        r"\b(ate|eat|eaten|eating|snacked|snack|snacking|drank|drink|drinking|sipped|sip|sipping|used|use|using|apply|applied|applying|rubbed|rub|rubbing|took|take|taking|smoked|smoke|vaped|vape|inhaled|inhale|felt|feel|had|have|having)\b",
         " ",
         value,
     )
@@ -1021,9 +1059,9 @@ def _expand_multi_item_exposure(parsed: ParsedEvent, text: str) -> list[ParsedEv
     # Extra conjunction expansion inside a single ingestion clause.
     # Example: "ate chicken and also mango" should yield both items.
     normalized_clause = " ".join((text or "").strip().lower().split())
-    if re.search(r"\b(ate|eat|eating|drank|drink|drinking|took|take|taking|used|use|using|swallowed|ingested)\b", normalized_clause):
+    if re.search(r"\b(ate|eat|eating|snacked|snack|snacking|drank|drink|drinking|sipped|sip|sipping|took|take|taking|used|use|using|swallowed|swallow|ingested|ingest|smoked|smoke|vaped|vape|inhaled|inhale)\b", normalized_clause):
         tail_match = re.search(
-            r"\b(?:ate|eat|eating|drank|drink|drinking|took|take|taking|used|use|using|swallowed|ingested)\b(.*)$",
+            r"\b(?:ate|eat|eating|snacked|snack|snacking|drank|drink|drinking|sipped|sip|sipping|took|take|taking|used|use|using|swallowed|swallow|ingested|ingest|smoked|smoke|vaped|vape|inhaled|inhale)\b(.*)$",
             normalized_clause,
         )
         if tail_match:
@@ -1232,6 +1270,8 @@ def parse_text_events(text: str, *, local_tz=None) -> list[ParsedEvent]:
             len(
                 re.findall(
                     r"\b(ate|eat|eaten|eating|drank|drink|drinking|took|take|taking|smoked|used|use|using|apply|applied|had|have|having)\b",
+                    # Include newer common grammar patterns so multi-event detection
+                    # keeps pace with exposure classification.
                     segment_lower,
                 )
             )
