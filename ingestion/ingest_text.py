@@ -715,7 +715,7 @@ def _infer_route(text: str) -> str:
     t = text.lower()
     if _LIFESTYLE_EXPOSURE_RE.search(t):
         return "behavioral"
-    if re.search(r"\b(near|nearby|around|exposed|exposure|environment|air quality|pollution|pollen|dust|mold|secondhand|second hand|passive smoke)\b", t):
+    if re.search(r"\b(near|nearby|exposed|exposure|environment|air quality|pollution|pollen|dust|mold|secondhand|second hand|passive smoke)\b", t):
         return "proximity_environment"
     if re.search(r"\b(went\s+to|visited|was\s+at|club|party|bar|concert|festival|crowd)\b", t):
         return "proximity_environment"
@@ -858,6 +858,9 @@ def _resolve_item_with_fallback(name: str | None) -> int | None:
 
 def _clean_candidate_text(text: str) -> str:
     value = text.strip().lower()
+    # Protect noun phrases that contain verb-like tokens from generic verb stripping.
+    value = re.sub(r"\benergy drinks\b", " energy_drinks ", value)
+    value = re.sub(r"\benergy drink\b", " energy_drink ", value)
     # Normalize common behavioral exposure phrases to canonical item-like terms.
     value = re.sub(r"\bworked\s+(?:an?\s+)?overnight\s+shift\b", " long shift ", value)
     value = re.sub(r"\bovernight\s+shift\b", " long shift ", value)
@@ -867,6 +870,7 @@ def _clean_candidate_text(text: str) -> str:
     value = re.sub(r"\bcould\s*not\s+sleep\s+at\s+all\b|\bcouldn't sleep at all\b|\bcouldnt sleep at all\b", " no sleep ", value)
     value = re.sub(r"\b(?:pulled\s+an?\s+)?all[- ]?nighter\b", " poor sleep ", value)
     value = re.sub(r"\bskipped\s+(?:a\s+)?(?:meal|breakfast|lunch|dinner)\b", " fasting ", value)
+    value = re.sub(r"\bskipped\b", " fasting ", value)
     value = re.sub(r"\bpoor sleep\s+(?:for\s+work|for\s+school|working|studying)\b", " poor sleep ", value)
     # Remove conversational scaffolding while preserving medical terms like "testosterone".
     value = re.sub(r"\b(?:did|do|done)\s+(?:that\s+)?test\b", " ", value)
@@ -901,7 +905,7 @@ def _clean_candidate_text(text: str) -> str:
     value = re.sub(r"\b(morning|afternoon|evening|night|breakfast|lunch|dinner)\b", " ", value)
     value = re.sub(r"\b(10|[1-9])\s*/\s*10\b", " ", value)
     value = re.sub(r"\b([1-9])\s*/\s*5\b", " ", value)
-    value = re.sub(r"\b(severity|sev|pain)\b", " ", value)
+    value = re.sub(r"\b(severity|sev)\b", " ", value)
     value = re.sub(r"\s+", " ", value).strip(" ,.;")
     # drop leading articles so "a cheeseburger" normalizes to "cheeseburger"
     value = re.sub(r"^(a|an|the)\s+", "", value)
@@ -919,6 +923,7 @@ def _clean_candidate_text(text: str) -> str:
         tokens.pop()
     value = " ".join(tokens).strip(" ,.;")
     value = re.sub(r"\s+", " ", value).strip(" ,.;")
+    value = value.replace("energy_drinks", "energy drinks").replace("energy_drink", "energy drink")
     return value
 
 
@@ -959,6 +964,7 @@ _SYMPTOM_RESOLUTION_FALLBACKS: dict[str, list[str]] = {
     "fatigue": ["tired"],
     "dizziness": ["lightheadedness"],
     "shakiness": ["dizziness", "tremor", "anxiety"],
+    "stomach": ["stomachache", "stomach pain", "abdominal pain"],
     "palpitations": ["racing heart", "tachycardia"],
     "chest tightness": ["chest pain", "shortness of breath"],
 }
