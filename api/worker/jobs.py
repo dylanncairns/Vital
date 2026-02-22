@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -16,6 +17,23 @@ DEFAULT_MAX_FAILED_ATTEMPTS = 5
 DEFAULT_FAILED_RETRY_BASE_SECONDS = 30
 DEFAULT_FAILED_RETRY_MAX_SECONDS = 600
 DEFAULT_RETRAIN_VERIFICATION_DELTA = int(os.getenv("MODEL_RETRAIN_VERIFICATION_DELTA", "10"))
+_SECRET_REDACTION_PATTERNS = [
+    (re.compile(r"sk-[A-Za-z0-9_\-]{12,}"), "[REDACTED_API_KEY]"),
+    (re.compile(r"(Bearer\s+)[A-Za-z0-9_\-\.]+", re.I), r"\1[REDACTED_TOKEN]"),
+]
+
+
+def _sanitize_error_message(message: str) -> str:
+    text = str(message or "")
+    for pattern, repl in _SECRET_REDACTION_PATTERNS:
+        text = pattern.sub(repl, text)
+    if "Incorrect API key provided" in text:
+        text = re.sub(
+            r"Incorrect API key provided:\s*[^\.]+",
+            "Incorrect API key provided: [REDACTED_API_KEY]",
+            text,
+        )
+    return text
 
 
 def _now_iso() -> str:
@@ -231,6 +249,7 @@ def mark_job_done(job_id: int) -> None:
 def mark_job_failed(job_id: int, error: str) -> None:
     conn = get_connection()
     try:
+        safe_error = _sanitize_error_message(error)
         conn.execute(
             """
             UPDATE background_jobs
@@ -240,7 +259,7 @@ def mark_job_failed(job_id: int, error: str) -> None:
                 updated_at = %s
             WHERE id = %s
             """,
-            (error[:500], _now_iso(), job_id),
+            (safe_error[:500], _now_iso(), job_id),
         )
         conn.commit()
     finally:

@@ -388,3 +388,7 @@
 - vector ingest includes item name + ingredients to broaden evidence acquisition per candidate
 - added evidence quality floor gating so weak citation rows arent ingested
 - aiming to increase relevant evidence acquisition and reduce weak evidence ingestion
+
+## Commit 56
+- Patch spots where OpenAI API could have leaked (they took it down)
+    - Appears to have been in RAG_DEBUG or vector ingest payload or job errors

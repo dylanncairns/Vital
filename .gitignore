@@ -2,6 +2,8 @@
 .DS_Store
 .Rhistory
 .open
+.env
+.env.*
 
 # Python cache
 **/__pycache__/

@@ -60,6 +60,24 @@ _LAG_BUCKET_PHRASE = {
     "72h_7d": "within 7 days",
 }
 
+_SECRET_PATTERNS = [
+    (re.compile(r"sk-[A-Za-z0-9_\-]{12,}"), "[REDACTED_API_KEY]"),
+    (re.compile(r"(Bearer\s+)[A-Za-z0-9_\-\.]+", re.I), r"\1[REDACTED_TOKEN]"),
+]
+
+
+def _sanitize_error_message(message: str) -> str:
+    text = str(message or "")
+    for pattern, repl in _SECRET_PATTERNS:
+        text = pattern.sub(repl, text)
+    if "Incorrect API key provided" in text:
+        text = re.sub(
+            r"Incorrect API key provided:\s*[^\.]+",
+            "Incorrect API key provided: [REDACTED_API_KEY]",
+            text,
+        )
+    return text[:1000]
+
 
 def ensure_vector_store_id(*, provided_id: str | None = None, name: str = "vital-rag-store") -> str:
     if provided_id:
@@ -546,7 +564,7 @@ def _discover_papers_for_query(
             last_error = exc
             continue
     if response_obj is None:
-        message = str(last_error) if last_error is not None else "unknown discovery error"
+        message = _sanitize_error_message(str(last_error) if last_error is not None else "unknown discovery error")
         if os.getenv("RAG_DEBUG", "0") == "1":
             print(f"[vector_ingest] discovery failed for query '{query}': {message}")
         return [], message

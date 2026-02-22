@@ -12,12 +12,29 @@ from sklearn.feature_extraction.text import HashingVectorizer
 from sklearn.metrics.pairwise import cosine_similarity as sklearn_cosine_similarity
 
 _NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
+_SECRET_REDACTION_PATTERNS = [
+    (re.compile(r"sk-[A-Za-z0-9_\-]{12,}"), "[REDACTED_API_KEY]"),
+    (re.compile(r"(Bearer\s+)[A-Za-z0-9_\-\.]+", re.I), r"\1[REDACTED_TOKEN]"),
+]
 _RELEVANCE_VECTORIZER = HashingVectorizer(
     n_features=4096,
     alternate_sign=False,
     norm="l2",
     ngram_range=(1, 2),
 )
+
+
+def _sanitize_error_message(message: str) -> str:
+    text = str(message or "")
+    for pattern, repl in _SECRET_REDACTION_PATTERNS:
+        text = pattern.sub(repl, text)
+    if "Incorrect API key provided" in text:
+        text = re.sub(
+            r"Incorrect API key provided:\s*[^\.]+",
+            "Incorrect API key provided: [REDACTED_API_KEY]",
+            text,
+        )
+    return text[:1000]
 
 RAG_SCHEMA = {
     "name": "rag_cited_answer",
@@ -910,7 +927,7 @@ def _llm_retrieve_evidence_rows(
 
     if response_obj is None:
         if os.getenv("RAG_DEBUG", "0") == "1" and last_error is not None:
-            print(f"[RAG] Responses API failed: {last_error}")
+            print(f"[RAG] Responses API failed: {_sanitize_error_message(str(last_error))}")
         return []
 
     response_payload = _to_plain_dict(response_obj)
