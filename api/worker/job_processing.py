@@ -1,3 +1,4 @@
+import json
 import os
 from psycopg import Error as DatabaseError
 from api.db import get_connection
@@ -31,6 +32,29 @@ EVIDENCE_REACQUIRE_DECISION_REASONS = {
     "suppressed_combo_unbalanced_evidence",
 }
 
+
+def _insight_row_has_no_evidence(row) -> bool:
+    if row is None:
+        return True
+    try:
+        citations_payload = row.get("citations_json") if isinstance(row, dict) else row["citations_json"]
+    except Exception:
+        citations_payload = None
+    citations: list[object] = []
+    if isinstance(citations_payload, str) and citations_payload.strip():
+        try:
+            decoded = json.loads(citations_payload)
+            if isinstance(decoded, list):
+                citations = decoded
+        except json.JSONDecodeError:
+            citations = []
+    evidence_summary = ""
+    try:
+        evidence_summary = str((row.get("evidence_summary") if isinstance(row, dict) else row["evidence_summary"]) or "")
+    except Exception:
+        evidence_summary = ""
+    return (not citations) or ("No matching evidence found for this symptom and exposure pattern." in evidence_summary)
+
 # called by main endpoint that worker repeatedly hits
 # may need separation of logic for multiple workers if model retrain is too heavy
 def process_background_jobs_batch(payload: ProcessJobsIn):
@@ -59,7 +83,7 @@ def process_background_jobs_batch(payload: ProcessJobsIn):
                 try:
                     row = conn.execute(
                         """
-                        SELECT evidence_strength_score, display_decision_reason
+                        SELECT evidence_strength_score, display_decision_reason, citations_json, evidence_summary
                         FROM insights
                         WHERE user_id = %s AND item_id = %s AND symptom_id = %s
                         ORDER BY id DESC
@@ -78,6 +102,7 @@ def process_background_jobs_batch(payload: ProcessJobsIn):
                     reacquire_max_strength = 0.35
                 should_reacquire = (
                     row is None
+                    or _insight_row_has_no_evidence(row)
                     or (
                         decision_reason in EVIDENCE_REACQUIRE_DECISION_REASONS
                         and evidence_strength <= max(0.0, min(1.0, reacquire_max_strength))
@@ -128,7 +153,7 @@ def process_background_jobs_batch(payload: ProcessJobsIn):
                         )
                         conn_retry = get_connection()
                         try:
-                            sync_claims_for_candidates(
+                            sync_retry_result = sync_claims_for_candidates(
                                 conn_retry,
                                 candidates=candidates,
                                 ingredient_name_map=fetch_ingredient_name_map(conn_retry),
@@ -143,7 +168,30 @@ def process_background_jobs_batch(payload: ProcessJobsIn):
                             raise
                         finally:
                             conn_retry.close()
+                    else:
+                        sync_retry_result = None
                 recompute_insights(user_id, target_pairs={(int(item_id), int(symptom_id))})
+                conn_check = get_connection()
+                try:
+                    latest_insight = conn_check.execute(
+                        """
+                        SELECT citations_json, evidence_summary
+                        FROM insights
+                        WHERE user_id = %s AND item_id = %s AND symptom_id = %s
+                        ORDER BY id DESC
+                        LIMIT 1
+                        """,
+                        (user_id, int(item_id), int(symptom_id)),
+                    ).fetchone()
+                finally:
+                    conn_check.close()
+                if _insight_row_has_no_evidence(latest_insight):
+                    claims_added_total = int(sync_result.get("claims_added", 0) or 0)
+                    if isinstance(sync_retry_result, dict):
+                        claims_added_total += int(sync_retry_result.get("claims_added", 0) or 0)
+                    raise RuntimeError(
+                        f"no evidence acquired for candidate after retrieval+discovery (claims_added={claims_added_total})"
+                    )
                 evidence_jobs_done += 1
             elif job["job_type"] == JOB_MODEL_RETRAIN:
                 run_training(dataset_source=os.getenv("MODEL_RETRAIN_DATASET_SOURCE", "hybrid"))
