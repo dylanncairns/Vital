@@ -122,7 +122,8 @@ _LIFESTYLE_EXPOSURE_RE = re.compile(
     r"poor sleep|bad sleep|no sleep|sleep deprivation|sleep deprived|insufficient sleep|"
     r"barely slept|hardly slept|didn't sleep|didnt sleep|couldn't sleep at all|couldnt sleep at all|"
     r"long shift|worked a long shift|overnight shift|jet lag|high stress|stressed|overworked|work stress|"
-    r"all[- ]?nighter|pulled an all nighter|dehydrated|dehydration|fasting|skipped (?:a )?meal"
+    r"all[- ]?nighter|pulled an all nighter|dehydrated|dehydration|fasting|"
+    r"skipped (?:a )?(?:meal|breakfast|lunch|dinner)"
     r")\b",
     re.I,
 )
@@ -216,7 +217,7 @@ _SYMPTOM_SYNONYM_RULES: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\bforgetful(?:ness)?\b", re.I), "brain fog"),
     (re.compile(r"\b(light[- ]?headed|lightheadedness)\b", re.I), "dizziness"),
     (re.compile(r"\b(dizzy|dizziness|vertigo|spinning)\b", re.I), "dizziness"),
-    (re.compile(r"\b(shaky|shakiness|jittery|trembl(?:e|ing)|tremor)\b", re.I), "dizziness"),
+    (re.compile(r"\b(shaky|shakiness|jittery|trembl(?:e|ing)|tremor)\b", re.I), "shakiness"),
     (re.compile(r"\b(exhausted|worn out|low energy|no energy|drained)\b", re.I), "fatigue"),
     (re.compile(r"\b(tired(?:ness)?|fatigued)\b", re.I), "fatigue"),
     (re.compile(r"\b(can'?t sleep|cannot sleep|unable to sleep|trouble sleeping|difficulty sleeping|poor sleep|sleep is bad)\b", re.I), "insomnia"),
@@ -822,6 +823,8 @@ def _fallback_exposure_candidate_from_text(text: str) -> str | None:
         r"\b(barely slept|hardly slept|didn't sleep|didnt sleep|no sleep|poor sleep)\b", low
     ):
         return "poor sleep"
+    if re.search(r"\bskipped\s+(?:a\s+)?(?:meal|breakfast|lunch|dinner)\b", low):
+        return "fasting"
     if re.search(r"\b(worked\s+(?:a\s+)?long\s+shift|long shift|overnight shift)\b", low):
         return "long shift"
     if _LIFESTYLE_EXPOSURE_RE.search(low):
@@ -831,16 +834,39 @@ def _fallback_exposure_candidate_from_text(text: str) -> str | None:
             return cleaned
     return None
 
+
+_ITEM_RESOLUTION_FALLBACKS: dict[str, list[str]] = {
+    "energy drink": ["caffeine", "coffee"],
+    "energy drinks": ["caffeine", "coffee"],
+}
+
+
+def _resolve_item_with_fallback(name: str | None) -> int | None:
+    if not name:
+        return None
+    resolved = resolve_item_id(name)
+    if resolved is not None:
+        return resolved
+    key = str(name).strip().lower()
+    for alt in _ITEM_RESOLUTION_FALLBACKS.get(key, []):
+        resolved = resolve_item_id(alt)
+        if resolved is not None:
+            return resolved
+    return None
+
 # functions below handle long string inputs with ambiguity in event details or time
 
 def _clean_candidate_text(text: str) -> str:
     value = text.strip().lower()
     # Normalize common behavioral exposure phrases to canonical item-like terms.
+    value = re.sub(r"\bworked\s+(?:an?\s+)?overnight\s+shift\b", " long shift ", value)
+    value = re.sub(r"\bovernight\s+shift\b", " long shift ", value)
     value = re.sub(r"\bworked\s+(?:a\s+)?long\s+shift\b", " long shift ", value)
     value = re.sub(r"\b(?:barely|hardly)\s+slept\b", " poor sleep ", value)
     value = re.sub(r"\b(?:did\s*not|didn't|didnt)\s+sleep\b", " poor sleep ", value)
     value = re.sub(r"\bcould\s*not\s+sleep\s+at\s+all\b|\bcouldn't sleep at all\b|\bcouldnt sleep at all\b", " no sleep ", value)
     value = re.sub(r"\b(?:pulled\s+an?\s+)?all[- ]?nighter\b", " poor sleep ", value)
+    value = re.sub(r"\bskipped\s+(?:a\s+)?(?:meal|breakfast|lunch|dinner)\b", " fasting ", value)
     value = re.sub(r"\bpoor sleep\s+(?:for\s+work|for\s+school|working|studying)\b", " poor sleep ", value)
     # Remove conversational scaffolding while preserving medical terms like "testosterone".
     value = re.sub(r"\b(?:did|do|done)\s+(?:that\s+)?test\b", " ", value)
@@ -932,6 +958,7 @@ def _normalize_symptom_candidate(candidate: str) -> str:
 _SYMPTOM_RESOLUTION_FALLBACKS: dict[str, list[str]] = {
     "fatigue": ["tired"],
     "dizziness": ["lightheadedness"],
+    "shakiness": ["dizziness", "tremor", "anxiety"],
     "palpitations": ["racing heart", "tachycardia"],
     "chest tightness": ["chest pain", "shortness of breath"],
 }
@@ -1216,7 +1243,7 @@ def _expand_multi_item_exposure(parsed: ParsedEvent, text: str) -> list[ParsedEv
     if parsed.item_id is not None:
         seen_item_ids.add(int(parsed.item_id))
     for candidate in item_candidates:
-        item_id = resolve_item_id(candidate)
+        item_id = _resolve_item_with_fallback(candidate)
         if item_id is None:
             continue
         item_id = int(item_id)
@@ -1271,6 +1298,35 @@ def _expand_multi_symptom_event(parsed: ParsedEvent, text: str) -> list[ParsedEv
         if not candidate or not _is_valid_symptom_candidate(candidate, clause):
             continue
         symptom_id = _resolve_symptom_with_fallback(candidate)
+        if symptom_id is None:
+            continue
+        symptom_id_int = int(symptom_id)
+        if symptom_id_int in seen_symptom_ids:
+            continue
+        seen_symptom_ids.add(symptom_id_int)
+        out.append(
+            ParsedEvent(
+                event_type="symptom",
+                timestamp=parsed.timestamp,
+                time_range_start=parsed.time_range_start,
+                time_range_end=parsed.time_range_end,
+                time_confidence=parsed.time_confidence,
+                item_id=None,
+                route=None,
+                symptom_id=symptom_id_int,
+                severity=parsed.severity,
+                source_text=clause,
+            )
+        )
+
+    # Secondary pass: extract additional explicit symptom terms from the same clause.
+    # This catches patterns like "felt jittery and had a headache" where one symptom
+    # may parse first and another can be missed by fragment parsing depending on wording.
+    for match in _COMMON_SYMPTOM_TERMS_RE.finditer(clause):
+        term = (match.group(0) or "").strip().lower()
+        if not term:
+            continue
+        symptom_id = _resolve_symptom_with_fallback(term)
         if symptom_id is None:
             continue
         symptom_id_int = int(symptom_id)
@@ -1621,13 +1677,13 @@ def _api_event_to_parsed_event(
         for token in item_tokens:
             if not token or _is_low_signal_candidate(token):
                 continue
-            item_id = resolve_item_id(token)
+            item_id = _resolve_item_with_fallback(token)
             if item_id is not None:
                 break
         if item_id is None:
             fallback_item = _fallback_exposure_candidate_from_text(source_for_split)
             if fallback_item:
-                item_id = resolve_item_id(fallback_item)
+                item_id = _resolve_item_with_fallback(fallback_item)
         if item_id is None:
             return None
         route = _choose_route_from_api_or_rules(source_text, entry.get("route"))
@@ -1918,7 +1974,7 @@ def parse_with_api(text: str, *, local_tz=None) -> ParsedEvent | None:
             if isinstance(item_name, str) and item_name.strip():
                 cleaned_item = _clean_candidate_text(item_name)
                 if not _is_low_signal_candidate(cleaned_item):
-                    item_id = resolve_item_id(cleaned_item)
+                    item_id = _resolve_item_with_fallback(cleaned_item)
         if item_id is None:
             return None
         route = _choose_route_from_api_or_rules(text, route)
@@ -1978,11 +2034,11 @@ def parse_with_rules(text: str, *, local_tz=None) -> ParsedEvent | None:
             candidate = _fallback_exposure_candidate_from_text(text) or ""
         if not candidate:
             return None
-        item_id = resolve_item_id(candidate)
+        item_id = _resolve_item_with_fallback(candidate)
         if item_id is None:
             fallback_candidate = _fallback_exposure_candidate_from_text(text)
             if fallback_candidate and fallback_candidate != candidate:
-                item_id = resolve_item_id(fallback_candidate)
+                item_id = _resolve_item_with_fallback(fallback_candidate)
         if item_id is None:
             return None
         route = _infer_route(text)
@@ -2042,7 +2098,7 @@ def ingest_text_event(
             route = normalize_route(route, strict=False)
             split_source = parsed.source_text or raw_text
             split_names = _split_exposure_items(split_source) if route == "ingestion" else []
-            item_ids = [resolve_item_id(name) for name in split_names] if len(split_names) > 1 else [parsed.item_id]
+            item_ids = [_resolve_item_with_fallback(name) for name in split_names] if len(split_names) > 1 else [parsed.item_id]
             written_item_ids: set[int] = set()
             has_time = bool(parsed.timestamp or parsed.time_range_start or parsed.time_range_end)
             for item_id in item_ids:
