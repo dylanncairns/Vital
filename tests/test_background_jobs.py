@@ -131,6 +131,7 @@ class BackgroundJobsTests(unittest.TestCase):
             patch("api.worker.job_processing.sync_claims_for_candidates", side_effect=[{"queries_built": 1, "papers_added": 0, "claims_added": 0}, {"queries_built": 1, "papers_added": 1, "claims_added": 1}]) as sync_mock,
             patch("api.worker.job_processing.ingest_sources_for_candidates", return_value={"uploaded_count": 1, "source_files": ["x.txt"]}) as ingest_mock,
             patch("api.worker.job_processing.recompute_insights", return_value={"candidates_considered": 1, "pairs_evaluated": 1, "insights_written": 1}),
+            patch("api.worker.job_processing._insight_row_has_no_evidence", return_value=False),
         ):
             result = process_background_jobs_batch(ProcessJobsIn(limit=10, max_papers_per_query=1))
 

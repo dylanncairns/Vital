@@ -422,9 +422,10 @@
     - expanded aliases for both combo items for LLM prompt retrival and gating
         - attempting to increase survival of true pairs
 
-## Commits 71-73
+## Commits 71-74
 - revise evidence direction computation and aggregation in rag.py
     - 90th percentil of evidence score was still 0 (with max of 0.75) meaning that evidence computation was bugged somewhere
     - patched aggregate_evidence so citation polarity metrics used downstream matches the metrics used for display gate
     - revised limited/mismatch evidence handling so signed evidence scores are produced rather than an array of rows collapsed to zero score
 - revise job processing for each evidence_acquire_candidate job to check the latest recomputed insight for that candidate and mark it as failed rather than done if it still has no matching citations
+    - Fixed broken int test with new evidence acquisition behavior
