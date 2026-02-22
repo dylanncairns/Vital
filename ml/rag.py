@@ -729,13 +729,61 @@ def _item_tokens_for_match(item_name: str | None) -> list[str]:
     return [t for t in tokens if t not in _GENERIC_ITEM_TOKENS]
 
 
+_ITEM_MATCH_ALIASES: dict[str, list[str]] = {
+    "poor sleep": [
+        "sleep deprivation",
+        "sleep deprived",
+        "sleep restriction",
+        "insufficient sleep",
+        "sleep loss",
+        "sleep deficit",
+    ],
+    "fasting": [
+        "fasting",
+        "meal skipping",
+        "skipped meals",
+        "skipped meal",
+        "food deprivation",
+    ],
+    "long shift": [
+        "shift work",
+        "shiftworker",
+        "shift worker",
+        "night shift",
+        "overnight shift",
+        "extended work hours",
+        "long work hours",
+    ],
+}
+
+
+def _item_match_phrases(item_name: str | None) -> list[str]:
+    normalized = " ".join((item_name or "").strip().lower().split())
+    if not normalized:
+        return []
+    phrases: list[str] = [normalized]
+    for alias in _ITEM_MATCH_ALIASES.get(normalized, []):
+        alias_norm = " ".join(alias.strip().lower().split())
+        if alias_norm and alias_norm not in phrases:
+            phrases.append(alias_norm)
+    return phrases
+
+
 def _item_context_mismatch(*, item_name: str | None, text: str) -> bool:
-    tokens = _item_tokens_for_match(item_name)
-    if not tokens:
+    phrases = _item_match_phrases(item_name)
+    tokens: list[str] = []
+    for phrase in phrases:
+        for token in _item_tokens_for_match(phrase):
+            if token not in tokens:
+                tokens.append(token)
+    if not tokens and not phrases:
         return False
     normalized = " ".join((text or "").strip().lower().split())
     if not normalized:
         return True
+    for phrase in phrases:
+        if phrase and phrase in normalized:
+            return False
     # For stem-like terms, allow basic inflections ("work" -> "worker", "working").
     for token in tokens:
         if token in normalized:

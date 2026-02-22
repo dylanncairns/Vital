@@ -414,3 +414,7 @@
 ## Commit 68
 - added better handling of timing for "poor sleep" and aliases 
     - phrase can come in suprisingly many forms 
+
+## Commit 69
+- patched RAG retrival returning no rows due to bad LLM retrival propmt
+    - needed behavioral exposure synonyms due to behavioral "measures" being studied with different terminology grammar than what is used to prompt for "items" type of exposures
