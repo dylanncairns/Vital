@@ -415,6 +415,9 @@
 - added better handling of timing for "poor sleep" and aliases 
     - phrase can come in suprisingly many forms 
 
-## Commit 69
+## Commits 69-70
 - patched RAG retrival returning no rows due to bad LLM retrival propmt
     - needed behavioral exposure synonyms due to behavioral "measures" being studied with different terminology grammar than what is used to prompt for "items" type of exposures
+    - needed less strict gating for combo-exposure to symptom evidence 
+    - expanded aliases for both combo items for LLM prompt retrival and gating
+        - attempting to increase survival of true pairs

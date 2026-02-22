@@ -297,6 +297,39 @@ def _tokenize_entity_name(value: str | None) -> set[str]:
     return tokens
 
 
+_COMBO_ITEM_TOKEN_ALIASES: dict[str, list[str]] = {
+    "poor sleep": [
+        "sleep deprivation",
+        "sleep deprived",
+        "sleep restriction",
+        "insufficient sleep",
+        "sleep loss",
+    ],
+    "fasting": [
+        "meal skipping",
+        "skipped meals",
+        "skipped meal",
+        "food deprivation",
+    ],
+    "long shift": [
+        "shift work",
+        "shift worker",
+        "night shift",
+        "overnight shift",
+        "extended work hours",
+        "long work hours",
+    ],
+}
+
+
+def _combo_match_tokens(value: str | None) -> set[str]:
+    tokens = set(_tokenize_entity_name(value))
+    normalized = " ".join((value or "").strip().lower().split())
+    for alias in _COMBO_ITEM_TOKEN_ALIASES.get(normalized, []):
+        tokens.update(_tokenize_entity_name(alias))
+    return tokens
+
+
 def _claim_mentions_tokens(claim: dict[str, Any], tokens: set[str]) -> bool:
     if not tokens:
         return False
@@ -325,8 +358,8 @@ def _filter_combo_pair_claims(
     item_b_name: str | None,
 ) -> list[dict[str, Any]]:
     # Combo evidence must mention both items in the same claim context.
-    tokens_a = _tokenize_entity_name(item_a_name)
-    tokens_b = _tokenize_entity_name(item_b_name)
+    tokens_a = _combo_match_tokens(item_a_name)
+    tokens_b = _combo_match_tokens(item_b_name)
     if not tokens_a or not tokens_b:
         return []
     out: list[dict[str, Any]] = []

@@ -916,6 +916,10 @@ def _llm_retrieve_evidence_rows(
         "Return JSON that exactly matches the schema. No extra keys, no missing keys. "
         "If evidence is insufficient, return empty citations/evidence arrays and explain limits in answer. "
         "Treat the candidate exposure literally and specifically; do not substitute broader hazard contexts. "
+        "You MAY use close clinical or lay aliases for the same exposure/symptom concept "
+        "(e.g., sleep deprivation for poor sleep, shift work for long shift, meal skipping for fasting, "
+        "palpitations for racing heart), but only when the cited snippet/title clearly refers to the same concept. "
+        "Do not broaden to a different exposure category or a generic risk factor. "
         "Example: ordinary 'water' should NOT be treated as contaminated/waterborne outbreak exposure "
         "unless the candidate text explicitly indicates contamination or unsafe water. "
         "Do NOT treat loosely related occupational/cohort populations as evidence unless the candidate exposure "
@@ -947,6 +951,7 @@ def _llm_retrieve_evidence_rows(
             "Return JSON matching schema exactly.",
             "Citations/supports must map to retrieved results.",
             "Reject citations where candidate exposure term is not explicitly present in snippet/title.",
+            "Clinical/lay aliases are allowed only when clearly equivalent to the provided exposure/symptom in the retrieved snippet/title.",
             (
                 "For combo candidates, every support must explicitly mention both exposures."
                 if is_combo
