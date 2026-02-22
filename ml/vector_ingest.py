@@ -668,12 +668,15 @@ def _discover_papers_for_query(
                 "snippet": paper.get("snippet"),
             }
         )
-    symptom_tokens = _tokenize_terms(symptom_name)
+    symptom_tokens: set[str] = set()
+    for symptom_term in _symptom_query_terms(str(symptom_name or "")):
+        symptom_tokens.update(_tokenize_terms(symptom_term))
     exposure_tokens: set[str] = set()
     for term in (exposure_terms or []):
         exposure_tokens.update(_tokenize_terms(term))
 
     if symptom_tokens or exposure_tokens:
+        original_deduped = list(deduped)
         filtered: list[dict[str, Any]] = []
         for paper in deduped:
             text = " ".join(
@@ -684,7 +687,22 @@ def _discover_papers_for_query(
             exposure_ok = True if not exposure_tokens else _text_contains_any_token(text, exposure_tokens)
             if symptom_ok and exposure_ok:
                 filtered.append(paper)
-        deduped = filtered
+        # If strict conjunctive filtering drops everything, fall back to a softer gate
+        # so novel/sparse pairs can still feed claim extraction.
+        if filtered:
+            deduped = filtered
+        else:
+            relaxed: list[dict[str, Any]] = []
+            for paper in original_deduped:
+                text = " ".join(
+                    str(value or "")
+                    for value in [paper.get("title"), paper.get("abstract"), paper.get("snippet")]
+                )
+                symptom_ok = True if not symptom_tokens else _text_contains_any_token(text, symptom_tokens)
+                exposure_ok = True if not exposure_tokens else _text_contains_any_token(text, exposure_tokens)
+                if symptom_ok or exposure_ok:
+                    relaxed.append(paper)
+            deduped = relaxed if relaxed else original_deduped
 
     deduped.sort(
         key=lambda paper: _paper_rank_score(

@@ -406,3 +406,7 @@
 - widen base of knowledge and rules for text ingestion
 - fix a lot of regex
 - need to switch to api parser or something other than manual regex
+
+## Commit 67
+- reduced brittle claim-row acceptance gating
+- reduced novel evidence gating thresholds

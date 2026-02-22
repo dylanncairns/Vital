@@ -1235,7 +1235,7 @@ def _claim_row_passes_quality_floor(row: dict[str, Any]) -> bool:
     min_abs_direction = max(0.0, min(1.0, float(os.getenv("RAG_MIN_ONLINE_ROW_ABS_DIRECTION", "0.04"))))
     min_snippet_chars = max(20, int(float(os.getenv("RAG_MIN_ONLINE_ROW_SNIPPET_CHARS", "40"))))
 
-    snippet = str(row.get("snippet") or "")
+    snippet = str(row.get("snippet") or row.get("summary") or "")
     relevance = max(0.0, min(1.0, float(row.get("relevance") or 0.0)))
     study_quality = _bounded_metric(row.get("study_quality_score"))
     population_match = _bounded_metric(row.get("population_match"))
@@ -1261,11 +1261,23 @@ def _claim_row_passes_quality_floor(row: dict[str, Any]) -> bool:
     if composite >= min_quality:
         return True
     # Soft pass path for sparse candidates if several key metrics clear floors.
-    return (
+    if (
         relevance >= min_relevance
         and llm_confidence >= min_confidence
         and population_match >= min_population
         and temporality_match >= min_temporality
+    ):
+        return True
+    # Sparse/novel fallback: allow a strong, grounded row when some support metrics
+    # are missing/underestimated but relevance and confidence are high.
+    sparse_min_relevance = max(min_relevance, 0.35)
+    sparse_min_confidence = max(min_confidence, 0.45)
+    sparse_min_study_quality = 0.20
+    return (
+        relevance >= sparse_min_relevance
+        and llm_confidence >= sparse_min_confidence
+        and study_quality >= sparse_min_study_quality
+        and risk_of_bias <= max_bias
     )
 
 
@@ -1299,6 +1311,7 @@ def sync_claims_for_candidates(
     papers_added = 0
     claims_added = 0
     rows_rejected_quality = 0
+    duplicate_claim_rows_skipped = 0
     retrieval_stage_attempts = 0
     retrieval_stage_rows = 0
     candidates_without_rows = 0
@@ -1472,7 +1485,10 @@ def sync_claims_for_candidates(
                 if existing_paper is None:
                     papers_added += 1
 
-                snippet = row["snippet"]
+                snippet = str(row.get("snippet") or row.get("summary") or "").strip()
+                if not snippet:
+                    rows_rejected_quality += 1
+                    continue
                 snippet_hash = text_hash(snippet)
                 if row_ingredient_id is not None:
                     target_item_ids = [None]
@@ -1496,6 +1512,7 @@ def sync_claims_for_candidates(
                         ),
                     ).fetchone()
                     if duplicate:
+                        duplicate_claim_rows_skipped += 1
                         continue
                     claims_added += ingest_paper_claim_chunks(
                         conn,
@@ -1521,6 +1538,7 @@ def sync_claims_for_candidates(
         "papers_added": papers_added,
         "claims_added": claims_added,
         "rows_rejected_quality": rows_rejected_quality,
+        "duplicate_claim_rows_skipped": duplicate_claim_rows_skipped,
         "retrieval_stage_attempts": retrieval_stage_attempts,
         "retrieval_stage_rows": retrieval_stage_rows,
         "candidates_without_rows": candidates_without_rows,
