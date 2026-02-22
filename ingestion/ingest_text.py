@@ -71,7 +71,10 @@ _SEVERITY_RE = re.compile(r"\b(severity|sev|pain)\s*[:=]?\s*(\d)\b", re.I)
 _RATING_RE = re.compile(r"\b(\d)\s*/\s*5\b")
 _RATING_10_RE = re.compile(r"\b(10|[1-9])\s*/\s*10\b")
 _SEVERITY_SUFFIX_RE = re.compile(r"\b(10|[1-9])\s*(?:/10)?\s*(?:severity|sev|pain)\b", re.I)
-_TIME_AT_RE = re.compile(r"\bat\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b", re.I)
+_TIME_AT_RE = re.compile(
+    r"(?:\b(?:at|around|about|by)\s+|@)(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b",
+    re.I,
+)
 _TIME_RANGE_RE = re.compile(
     r"\b(?:from\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*[-–to]+\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b",
     re.I,
@@ -107,7 +110,7 @@ _SYMPTOM_CUES_RE = re.compile(
     r"congestion|congested|runny nose|stuffy nose|sinus|"
     r"numb|numbness|tingling|pins and needles|"
     r"joint pain|back pain|muscle pain|body aches|"
-    r"rash|itch|itchy|hives|acne|breakout|"
+    r"rash|itch|itchy|hives|acne|breakout|breaking out|"
     r"cough|fever|sore throat|chills"
     r")\b",
     re.I,
@@ -117,7 +120,8 @@ _MEAL_CONTEXT_RE = re.compile(r"\b(breakfast|lunch|dinner|snack|snacked|ate|eate
 _LIFESTYLE_EXPOSURE_RE = re.compile(
     r"\b("
     r"poor sleep|bad sleep|no sleep|sleep deprivation|sleep deprived|insufficient sleep|"
-    r"long shift|overnight shift|jet lag|high stress|stressed|overworked|work stress|"
+    r"barely slept|hardly slept|didn't sleep|didnt sleep|couldn't sleep at all|couldnt sleep at all|"
+    r"long shift|worked a long shift|overnight shift|jet lag|high stress|stressed|overworked|work stress|"
     r"all[- ]?nighter|pulled an all nighter|dehydrated|dehydration|fasting|skipped (?:a )?meal"
     r")\b",
     re.I,
@@ -243,7 +247,7 @@ _SYMPTOM_SYNONYM_RULES: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\b(head pain|head ache)\b", re.I), "headache"),
     (re.compile(r"\bhead\s+(?:is\s+)?hurt(?:s|ing)?\b", re.I), "headache"),
     (re.compile(r"\bmy\s+head\s+hurt(?:s|ing)?\b", re.I), "headache"),
-    (re.compile(r"\b(acne spots?|breakouts?|pimples?|zits?)\b", re.I), "acne"),
+    (re.compile(r"\b(acne spots?|breakouts?|breaking out|pimples?|zits?)\b", re.I), "acne"),
     (re.compile(r"\b(bloated|bloating|gassy|gas)\b", re.I), "bloating"),
     (re.compile(r"\b(can'?t poop|hard to poop|haven'?t pooped)\b", re.I), "constipation"),
     (re.compile(r"\b(loose stools?|runny stools?)\b", re.I), "diarrhea"),
@@ -622,6 +626,7 @@ def _guess_event_type(text: str) -> str:
     has_common_symptom = _COMMON_SYMPTOM_TERMS_RE.search(lower) is not None
     has_had_object = _HAD_OBJECT_RE.search(lower) is not None
     has_meal_marker = re.search(r"\b(breakfast|lunch|dinner)\b", lower) is not None
+    has_lifestyle_exposure = _LIFESTYLE_EXPOSURE_RE.search(lower) is not None
 
     # Prefer symptom when symptom signal is explicit and no strong exposure verb exists.
     if (
@@ -637,6 +642,8 @@ def _guess_event_type(text: str) -> str:
         return "exposure"
     if has_place_context_exposure and not has_common_symptom and not has_symptom_cue:
         return "exposure"
+    if has_lifestyle_exposure and not has_common_symptom and not has_symptom_cue:
+        return "exposure"
 
     if _EXPOSURE_VERBS.search(text):
         return "exposure"
@@ -647,6 +654,8 @@ def _guess_event_type(text: str) -> str:
     if _CONTEXT_EXPOSURE_RE.search(text):
         return "exposure"
     if _AT_PLACE_EXPOSURE_RE.search(text):
+        return "exposure"
+    if _LIFESTYLE_EXPOSURE_RE.search(text):
         return "exposure"
     return "symptom"
 
@@ -680,7 +689,7 @@ def _split_exposure_items(text: str) -> list[str]:
     # Extract likely item phrase after ingestion verb and split list-like food entries.
     lower = text.lower()
     match = re.search(
-        r"\b(ate|eat|eaten|eating|snacked|snack|snacking|drank|drink|drinking|sipped|sip|sipping|took|take|taking|used|use|using|swallowed|swallow|ingested|ingest|had|have|having)\b",
+        r"\b(ate|eat|eaten|eating|snacked|snack|snacking|drank|drink|drinking|sipped|sip|sipping|took|take|taking|used|use|using|swallowed|swallow|ingested|ingest|smoked|smoke|vaped|vape|inhaled|inhale|had|have|having)\b",
         lower,
     )
     if not match:
@@ -708,8 +717,11 @@ def _split_exposure_items(text: str) -> list[str]:
         )[0]
         segment = _DATE_TOKEN_RE.sub(" ", segment)
         segment = re.sub(r"\b(?:i|we)\s+(?:had|have|having)\b", " and ", segment)
+        symptom_match = _SYMPTOM_CUES_RE.search(segment)
+        if symptom_match:
+            segment = segment[: symptom_match.start()]
         segment = re.split(r"\b(felt|feel)\b", segment, maxsplit=1)[0]
-        parts = re.split(r"\s*(?:,|&|\band\b|\bwith\b)\s*", segment)
+        parts = re.split(r"\s*(?:,|/|&|\band\b|\bwith\b)\s*", segment)
         out: list[str] = []
         seen: set[str] = set()
         for part in parts:
@@ -721,15 +733,22 @@ def _split_exposure_items(text: str) -> list[str]:
         return out
     segment = lower[match.end():]
     segment = re.sub(r"\b(?:i|we)\s+(?:had|have|having)\b", " and ", segment)
-    segment = re.split(r"\b(at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\b", segment, maxsplit=1)[0]
+    segment = re.split(
+        r"(?:\b(?:at|around|about|by)\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?\b|@\d{1,2}(?::\d{2})?\s*(?:am|pm)?)",
+        segment,
+        maxsplit=1,
+    )[0]
     segment = re.split(
         r"\b(today|yesterday|last night|this morning|this afternoon|this evening|morning|afternoon|evening|night|breakfast|lunch|dinner|this breakfast|this lunch|this dinner|yesterday breakfast|yesterday lunch|yesterday dinner)\b",
         segment,
         maxsplit=1,
     )[0]
     segment = _DATE_TOKEN_RE.sub(" ", segment)
+    symptom_match = _SYMPTOM_CUES_RE.search(segment)
+    if symptom_match:
+        segment = segment[: symptom_match.start()]
     segment = re.split(r"\b(felt|feel)\b", segment, maxsplit=1)[0]
-    parts = re.split(r"\s*(?:,|&|\band\b|\bwith\b)\s*", segment)
+    parts = re.split(r"\s*(?:,|/|&|\band\b|\bwith\b)\s*", segment)
     out: list[str] = []
     seen: set[str] = set()
     for part in parts:
@@ -740,10 +759,31 @@ def _split_exposure_items(text: str) -> list[str]:
         out.append(cleaned)
     return out
 
+
+def _fallback_exposure_candidate_from_text(text: str) -> str | None:
+    low = (text or "").lower()
+    if re.search(r"\b(vaped|vape|vaping)\b", low):
+        return "vaping"
+    if re.search(r"\b(smoked|smoke|smoking)\b", low):
+        return "smoking"
+    if re.search(r"\b(inhaled|inhale|inhaling)\b", low):
+        return "inhalation"
+    if _LIFESTYLE_EXPOSURE_RE.search(low):
+        # Reuse candidate cleaning normalization for lifestyle phrases.
+        cleaned = _clean_candidate_text(low)
+        if cleaned and not _is_low_signal_candidate(cleaned):
+            return cleaned
+    return None
+
 # functions below handle long string inputs with ambiguity in event details or time
 
 def _clean_candidate_text(text: str) -> str:
     value = text.strip().lower()
+    # Normalize common behavioral exposure phrases to canonical item-like terms.
+    value = re.sub(r"\bworked\s+(?:a\s+)?long\s+shift\b", " long shift ", value)
+    value = re.sub(r"\b(?:barely|hardly)\s+slept\b", " poor sleep ", value)
+    value = re.sub(r"\b(?:did\s*not|didn't|didnt)\s+sleep\b", " poor sleep ", value)
+    value = re.sub(r"\bcould\s*not\s+sleep\s+at\s+all\b|\bcouldn't sleep at all\b|\bcouldnt sleep at all\b", " no sleep ", value)
     # Remove conversational scaffolding while preserving medical terms like "testosterone".
     value = re.sub(r"\b(?:did|do|done)\s+(?:that\s+)?test\b", " ", value)
     value = re.sub(r"\bwent\s+and\b", " ", value)
@@ -756,6 +796,10 @@ def _clean_candidate_text(text: str) -> str:
     value = _TIME_AT_RE.sub(" ", value)
     value = _RELATIVE_RE.sub(" ", value)
     value = _DATE_TOKEN_RE.sub(" ", value)
+    # Remove common temporal phrases that otherwise leak nouns into exposure items
+    # (e.g., "face wash before bed" -> "face wash", not "face wash bed").
+    value = re.sub(r"\b(?:before|after|at)\s+bed(?:time)?\b", " ", value)
+    value = re.sub(r"\b(?:before|after)\s+sleep(?:ing)?\b", " ", value)
     value = re.sub(
         r"\b(?:jan|january|feb|february|mar|march|apr|april|may|jun|june|jul|july|aug|august|sep|sept|september|oct|october|nov|november|dec|december)\b",
         " ",
@@ -997,7 +1041,7 @@ def _split_into_segments(text: str) -> list[str]:
         if len(cleaned) < 3:
             continue
         parts = re.split(
-            r"\s*(?:,\s*)?(?:and then|then|after that|afterwards|later)\s+",
+            r"\s*(?:,\s*)?(?:and then|then|and now|now|after that|afterwards|later)\s+",
             cleaned,
             flags=re.I,
         )
@@ -1293,6 +1337,13 @@ def parse_text_events(text: str, *, local_tz=None) -> list[ParsedEvent]:
             and time_signal_mentions >= 2
         )
 
+        should_trust_whole_segment_parse = not (
+            has_mixed_signal
+            or has_multi_exposure_clause
+            or has_multiple_exposure_mentions
+            or has_multi_temporal_symptom_clause
+        )
+
         if parsed is not None:
             parsed = _apply_time_context(
                 parsed,
@@ -1300,22 +1351,18 @@ def parse_text_events(text: str, *, local_tz=None) -> list[ParsedEvent]:
                 context_start=seg_start or last_context_start,
                 context_end=seg_end or last_context_end,
             )
-            # For multi-exposure clauses, prefer clause parsing over whole-segment parse to avoid blended artifacts.
-            if not has_multi_exposure_clause and not has_multiple_exposure_mentions:
+            # Prefer clause parsing over whole-segment parse for complex mixed/multi-event segments
+            # to avoid blended artifacts (e.g., first time phrase incorrectly applied to later symptoms).
+            if should_trust_whole_segment_parse:
                 for expanded in _expand_multi_item_exposure(parsed, segment):
                     _append_if_new(expanded)
-            if (
-                not has_mixed_signal
-                and not has_multi_exposure_clause
-                and not has_multiple_exposure_mentions
-                and not has_multi_temporal_symptom_clause
-            ):
+            if should_trust_whole_segment_parse:
                 continue
         # Fallback for mixed blurbs in one sentence: split into clause-like chunks.
         clauses = [
             part.strip()
             for part in re.split(
-                r"\s*(?:,|\band then\b|\bthen\b|\band after\b|\bafter\b|\band\b|\band for (?:breakfast|lunch|dinner)\b)\s*",
+                r"\s*(?:,|/|\+|\band then\b|\bthen\b|\band after\b|\bafter\b|\band\b|\band for (?:breakfast|lunch|dinner)\b)\s*",
                 segment,
                 flags=re.I,
             )
@@ -1394,6 +1441,10 @@ def _api_event_to_parsed_event(
             item_id = resolve_item_id(token)
             if item_id is not None:
                 break
+        if item_id is None:
+            fallback_item = _fallback_exposure_candidate_from_text(source_for_split)
+            if fallback_item:
+                item_id = resolve_item_id(fallback_item)
         if item_id is None:
             return None
         route = entry.get("route")
@@ -1669,6 +1720,12 @@ def parse_with_api(text: str, *, local_tz=None) -> ParsedEvent | None:
         time_range_end,
         local_tz=local_tz,
     )
+    # If API extraction missed time fields, fall back to deterministic parser on the raw text.
+    if not any([timestamp, time_range_start, time_range_end]):
+        fallback_ts, fallback_start, fallback_end = _parse_time(text, local_tz=local_tz)
+        timestamp = to_utc_iso(fallback_ts, strict=False)
+        time_range_start = to_utc_iso(fallback_start, strict=False)
+        time_range_end = to_utc_iso(fallback_end, strict=False)
     time_confidence = data.get("time_confidence")
     if time_confidence not in {"exact", "approx", "backfilled"}:
         time_confidence = "exact" if timestamp else "approx"
@@ -1746,8 +1803,14 @@ def parse_with_rules(text: str, *, local_tz=None) -> ParsedEvent | None:
         split_items = _split_exposure_items(text)
         candidate = split_items[0] if split_items else (cleaned_tokens[0] if cleaned_tokens else "")
         if not candidate:
+            candidate = _fallback_exposure_candidate_from_text(text) or ""
+        if not candidate:
             return None
         item_id = resolve_item_id(candidate)
+        if item_id is None:
+            fallback_candidate = _fallback_exposure_candidate_from_text(text)
+            if fallback_candidate and fallback_candidate != candidate:
+                item_id = resolve_item_id(fallback_candidate)
         if item_id is None:
             return None
         route = _infer_route(text)
