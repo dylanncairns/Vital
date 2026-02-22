@@ -41,7 +41,7 @@ _EXPOSURE_VERBS = re.compile(
     r"\b("
     r"ate|eat|eaten|eating|snacked|snack|snacking|"
     r"drank|drink|drinking|sipped|sip|sipping|"
-    r"used|use|using|apply|applied|applying|rubbed|rub|rubbing|"
+    r"used|use|using|tried|try|trying|apply|applied|applying|rubbed|rub|rubbing|"
     r"took|take|taking|swallowed|swallow|swallowing|ingested|ingest|ingesting|"
     r"smoked|smoke|smoking|vaped|vape|vaping|inhaled|inhale|inhaling|"
     r"injected|inject|injecting"
@@ -76,6 +76,7 @@ _TIME_AT_RE = re.compile(
     re.I,
 )
 _MIDNIGHT_RE = re.compile(r"\b(?:at|around|about|by)?\s*midnight\b", re.I)
+_NOON_RE = re.compile(r"\b(?:at|around|about|by)?\s*(?:noon|midday)\b", re.I)
 _TIME_RANGE_RE = re.compile(
     r"\b(?:from\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*[-–to]+\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b",
     re.I,
@@ -123,7 +124,7 @@ _LIFESTYLE_EXPOSURE_RE = re.compile(
     r"\b("
     r"poor sleep|bad sleep|no sleep|sleep deprivation|sleep deprived|insufficient sleep|"
     r"barely slept|hardly slept|didn't sleep|didnt sleep|couldn't sleep at all|couldnt sleep at all|"
-    r"long shift|worked a long shift|overnight shift|jet lag|high stress|stressed|overworked|work stress|"
+    r"long shift|double shift|worked a long shift|worked a double shift|overnight shift|jet lag|high stress|stressed|overworked|work stress|"
     r"all[- ]?nighter|pulled an all nighter|dehydrated|dehydration|fasting|"
     r"skipped (?:a )?(?:meal|breakfast|lunch|dinner)"
     r")\b",
@@ -171,8 +172,10 @@ def _tz_from_offset_minutes(offset_minutes: int | None):
 def _event_has_time(parsed: ParsedEvent) -> bool:
     return bool(parsed.timestamp or parsed.time_range_start or parsed.time_range_end)
 _LOW_SIGNAL_TOKENS = {
-    "in",
+    "a",
+    "an",
     "the",
+    "in",
     "in the",
     "for",
     "to",
@@ -194,6 +197,15 @@ _LOW_SIGNAL_TOKENS = {
     "later",
     "earlier",
     "once",
+}
+_GENERIC_SYMPTOM_TOKENS = {
+    "sore",
+    "pain",
+    "ache",
+    "tightness",
+    "pressure",
+    "burning",
+    "itchy",
 }
 _COMMON_SYMPTOM_TERMS_RE = re.compile(
     r"\b("
@@ -557,6 +569,20 @@ def _parse_time(text: str, *, local_tz=None) -> tuple[str | None, str | None, st
         ts = base.replace(hour=0, minute=0, second=0, microsecond=0)
         return ts.astimezone(timezone.utc).isoformat(), None, None
 
+    if _NOON_RE.search(text):
+        base = absolute_date or now
+        if days_ago is not None:
+            base = now - timedelta(days=days_ago)
+        rel = _RELATIVE_RE.search(text)
+        if rel:
+            token = rel.group(1).lower()
+            if token.startswith("yesterday") or token == "last night" or token == "yesterday":
+                base = now - timedelta(days=1)
+            elif token.startswith("next "):
+                base = now + timedelta(days=1)
+        ts = base.replace(hour=12, minute=0, second=0, microsecond=0)
+        return ts.astimezone(timezone.utc).isoformat(), None, None
+
     match = _RELATIVE_RE.search(text)
     if match:
         token = match.group(1).lower()
@@ -755,7 +781,7 @@ def _infer_route(text: str) -> str:
         return "injection"
     if _MEAL_CONTEXT_RE.search(t) and re.search(r"\b(had|have|having)\b", t):
         return "ingestion"
-    if re.search(r"\b(ate|eat|eaten|eating|snacked|snack|snacking|drank|drink|drinking|sipped|sip|sipping|took|take|taking|used|use|using|swallowed|swallow|ingested|ingest)\b", t):
+    if re.search(r"\b(ate|eat|eaten|eating|snacked|snack|snacking|drank|drink|drinking|sipped|sip|sipping|took|take|taking|used|use|using|tried|try|trying|swallowed|swallow|ingested|ingest)\b", t):
         return "ingestion"
     if _HAD_OBJECT_RE.search(t) and _COMMON_SYMPTOM_TERMS_RE.search(t) is None:
         return "ingestion"
@@ -766,7 +792,7 @@ def _split_exposure_items(text: str) -> list[str]:
     # Extract likely item phrase after ingestion verb and split list-like food entries.
     lower = text.lower()
     match = re.search(
-        r"\b(ate|eat|eaten|eating|snacked|snack|snacking|drank|drink|drinking|sipped|sip|sipping|took|take|taking|used|use|using|swallowed|swallow|ingested|ingest|smoked|smoke|vaped|vape|inhaled|inhale|had|have|having)\b",
+        r"\b(ate|eat|eaten|eating|snacked|snack|snacking|drank|drink|drinking|sipped|sip|sipping|took|take|taking|used|use|using|tried|try|trying|swallowed|swallow|ingested|ingest|smoked|smoke|vaped|vape|inhaled|inhale|had|have|having)\b",
         lower,
     )
     if not match:
@@ -788,7 +814,9 @@ def _split_exposure_items(text: str) -> list[str]:
                 # Fallback for noun lists without explicit verbs (e.g., "chicken and rice").
                 segment = lower
         segment = re.split(
-            r"\b(today|yesterday|last night|this morning|this afternoon|this evening|morning|afternoon|evening|night|breakfast|lunch|dinner|this breakfast|this lunch|this dinner|yesterday breakfast|yesterday lunch|yesterday dinner)\b",
+            r"\b(today|yesterday|last night|this morning|this afternoon|this evening|morning|afternoon|evening|night|"
+            r"this breakfast|this lunch|this dinner|yesterday breakfast|yesterday lunch|yesterday dinner|"
+            r"for breakfast|for lunch|for dinner|at breakfast|at lunch|at dinner)\b",
             segment,
             maxsplit=1,
         )[0]
@@ -816,7 +844,9 @@ def _split_exposure_items(text: str) -> list[str]:
         maxsplit=1,
     )[0]
     segment = re.split(
-        r"\b(today|yesterday|last night|this morning|this afternoon|this evening|morning|afternoon|evening|night|breakfast|lunch|dinner|this breakfast|this lunch|this dinner|yesterday breakfast|yesterday lunch|yesterday dinner)\b",
+        r"\b(today|yesterday|last night|this morning|this afternoon|this evening|morning|afternoon|evening|night|"
+        r"this breakfast|this lunch|this dinner|yesterday breakfast|yesterday lunch|yesterday dinner|"
+        r"for breakfast|for lunch|for dinner|at breakfast|at lunch|at dinner)\b",
         segment,
         maxsplit=1,
     )[0]
@@ -851,7 +881,7 @@ def _fallback_exposure_candidate_from_text(text: str) -> str | None:
         return "poor sleep"
     if re.search(r"\bskipped\s+(?:a\s+)?(?:meal|breakfast|lunch|dinner)\b", low):
         return "fasting"
-    if re.search(r"\b(worked\s+(?:a\s+)?long\s+shift|long shift|overnight shift)\b", low):
+    if re.search(r"\b(worked\s+(?:a\s+)?(?:long|double)\s+shift|long shift|double shift|overnight shift)\b", low):
         return "long shift"
     if _LIFESTYLE_EXPOSURE_RE.search(low):
         # Reuse candidate cleaning normalization for lifestyle phrases.
@@ -888,6 +918,8 @@ def _clean_candidate_text(text: str) -> str:
     value = re.sub(r"\benergy drinks\b", " energy_drinks ", value)
     value = re.sub(r"\benergy drink\b", " energy_drink ", value)
     # Normalize common behavioral exposure phrases to canonical item-like terms.
+    value = re.sub(r"\bworked\s+(?:a\s+)?double\s+shift\b", " long shift ", value)
+    value = re.sub(r"\bdouble\s+shift\b", " long shift ", value)
     value = re.sub(r"\bworked\s+(?:an?\s+)?overnight\s+shift\b", " long shift ", value)
     value = re.sub(r"\bovernight\s+shift\b", " long shift ", value)
     value = re.sub(r"\bworked\s+(?:a\s+)?long\s+shift\b", " long shift ", value)
@@ -908,6 +940,8 @@ def _clean_candidate_text(text: str) -> str:
     value = re.sub(r"\b(plenty|many|much|some)\s+of\b", " ", value)
     value = re.sub(r"\b\d{1,2}\s*-\s*\d{1,2}\b", " ", value)
     value = _TIME_AT_RE.sub(" ", value)
+    value = _MIDNIGHT_RE.sub(" ", value)
+    value = _NOON_RE.sub(" ", value)
     value = _DAYS_AGO_RE.sub(" ", value)
     value = _RELATIVE_RE.sub(" ", value)
     value = _DATE_TOKEN_RE.sub(" ", value)
@@ -926,11 +960,11 @@ def _clean_candidate_text(text: str) -> str:
     value = re.sub(r"\b(i|we|also|then|so|when|and|at|about|this|that|in|for|on|to|of|from|by|went|visit|visited|did|do|done|after|before|during|while|because|since|got|my)\b", " ", value)
     value = re.sub(r"\b(was|were|is|am|been|being)\b", " ", value)
     value = re.sub(
-        r"\b(ate|eat|eaten|eating|snacked|snack|snacking|drank|drink|drinking|sipped|sip|sipping|used|use|using|apply|applied|applying|rubbed|rub|rubbing|took|take|taking|smoked|smoke|vaped|vape|inhaled|inhale|felt|feel|had|have|having)\b",
+        r"\b(ate|eat|eaten|eating|snacked|snack|snacking|drank|drink|drinking|sipped|sip|sipping|used|use|using|tried|try|trying|apply|applied|applying|rubbed|rub|rubbing|took|take|taking|smoked|smoke|vaped|vape|inhaled|inhale|felt|feel|had|have|having)\b",
         " ",
         value,
     )
-    value = re.sub(r"\b(morning|afternoon|evening|night|breakfast|lunch|dinner)\b", " ", value)
+    value = re.sub(r"\b(morning|afternoon|evening|night|noon|midday|breakfast|lunch|dinner)\b", " ", value)
     value = re.sub(r"\b(10|[1-9])\s*/\s*10\b", " ", value)
     value = re.sub(r"\b([1-9])\s*/\s*5\b", " ", value)
     value = re.sub(r"\b(severity|sev)\b", " ", value)
@@ -1030,6 +1064,8 @@ def _is_low_signal_candidate(value: str) -> bool:
 def _is_valid_symptom_candidate(candidate: str, source_text: str) -> bool:
     normalized = _normalize_symptom_candidate(candidate)
     if _is_low_signal_candidate(normalized):
+        return False
+    if normalized in _GENERIC_SYMPTOM_TOKENS:
         return False
     # If the candidate itself looks like an exposure phrase, never create symptom rows from it.
     if _EXPOSURE_VERBS.search(normalized) or _CONTEXT_EXPOSURE_RE.search(normalized):
@@ -1259,9 +1295,9 @@ def _expand_multi_item_exposure(parsed: ParsedEvent, text: str) -> list[ParsedEv
     # Extra conjunction expansion inside a single ingestion clause.
     # Example: "ate chicken and also mango" should yield both items.
     normalized_clause = " ".join((text or "").strip().lower().split())
-    if re.search(r"\b(ate|eat|eating|snacked|snack|snacking|drank|drink|drinking|sipped|sip|sipping|took|take|taking|used|use|using|swallowed|swallow|ingested|ingest|smoked|smoke|vaped|vape|inhaled|inhale)\b", normalized_clause):
+    if re.search(r"\b(ate|eat|eating|snacked|snack|snacking|drank|drink|drinking|sipped|sip|sipping|took|take|taking|used|use|using|tried|try|trying|swallowed|swallow|ingested|ingest|smoked|smoke|vaped|vape|inhaled|inhale)\b", normalized_clause):
         tail_match = re.search(
-            r"\b(?:ate|eat|eating|snacked|snack|snacking|drank|drink|drinking|sipped|sip|sipping|took|take|taking|used|use|using|swallowed|swallow|ingested|ingest|smoked|smoke|vaped|vape|inhaled|inhale)\b(.*)$",
+            r"\b(?:ate|eat|eating|snacked|snack|snacking|drank|drink|drinking|sipped|sip|sipping|took|take|taking|used|use|using|tried|try|trying|swallowed|swallow|ingested|ingest|smoked|smoke|vaped|vape|inhaled|inhale)\b(.*)$",
             normalized_clause,
         )
         if tail_match:
@@ -1577,7 +1613,7 @@ def parse_text_events(text: str, *, local_tz=None) -> list[ParsedEvent]:
         has_multiple_exposure_mentions = (
             len(
                 re.findall(
-                    r"\b(ate|eat|eaten|eating|drank|drink|drinking|took|take|taking|smoked|used|use|using|apply|applied|had|have|having)\b",
+                    r"\b(ate|eat|eaten|eating|drank|drink|drinking|took|take|taking|smoked|used|use|using|tried|try|trying|apply|applied|had|have|having)\b",
                     # Include newer common grammar patterns so multi-event detection
                     # keeps pace with exposure classification.
                     segment_lower,
