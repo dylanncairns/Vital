@@ -11,7 +11,7 @@ def main() -> None:
     parser.add_argument("--learning-rate", type=float, default=0.2, help="Boosting learning rate")
     parser.add_argument(
         "--dataset-source",
-        choices=("curated", "insights", "feedback", "timeline_case_control", "hybrid"),
+        choices=("curated", "feedback", "hybrid"),
         default="hybrid",
         help="Training dataset source",
     )

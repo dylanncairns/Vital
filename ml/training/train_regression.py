@@ -9,7 +9,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Train fusion regression model only.")
     parser.add_argument(
         "--dataset-source",
-        choices=("curated", "insights", "feedback", "timeline_case_control", "hybrid"),
+        choices=("curated", "feedback", "hybrid"),
         default="hybrid",
         help="Training dataset source",
     )

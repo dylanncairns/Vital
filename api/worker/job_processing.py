@@ -24,6 +24,13 @@ from ml.insights import list_rag_sync_candidates, recompute_insights
 from ml.vector_ingest import ingest_sources_for_candidates
 from ml.training.training_pipeline import run_training
 
+EVIDENCE_REACQUIRE_DECISION_REASONS = {
+    "suppressed_no_citations",
+    "suppressed_low_evidence_strength",
+    "suppressed_combo_no_pair_evidence",
+    "suppressed_combo_unbalanced_evidence",
+}
+
 # called by main endpoint that worker repeatedly hits
 # may need separation of logic for multiple workers if model retrain is too heavy
 def process_background_jobs_batch(payload: ProcessJobsIn):
@@ -52,7 +59,7 @@ def process_background_jobs_batch(payload: ProcessJobsIn):
                 try:
                     row = conn.execute(
                         """
-                        SELECT evidence_strength_score
+                        SELECT evidence_strength_score, display_decision_reason
                         FROM insights
                         WHERE user_id = %s AND item_id = %s AND symptom_id = %s
                         ORDER BY id DESC
@@ -64,7 +71,19 @@ def process_background_jobs_batch(payload: ProcessJobsIn):
                     conn.close()
 
                 evidence_strength = float(row["evidence_strength_score"]) if row and row["evidence_strength_score"] is not None else 0.0
-                if evidence_strength <= 0.0:
+                decision_reason = str(row["display_decision_reason"] or "") if row else ""
+                try:
+                    reacquire_max_strength = float(os.getenv("EVIDENCE_REACQUIRE_MAX_STRENGTH", "0.35"))
+                except (TypeError, ValueError):
+                    reacquire_max_strength = 0.35
+                should_reacquire = (
+                    row is None
+                    or (
+                        decision_reason in EVIDENCE_REACQUIRE_DECISION_REASONS
+                        and evidence_strength <= max(0.0, min(1.0, reacquire_max_strength))
+                    )
+                )
+                if should_reacquire:
                     enqueue_background_job(
                         user_id=user_id,
                         job_type=JOB_EVIDENCE_ACQUIRE_CANDIDATE,

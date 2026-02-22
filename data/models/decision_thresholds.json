@@ -17,5 +17,14 @@
   "min_combo_cooccurrence_for_supported": 3.0,
   "min_combo_unique_exposure_events_for_supported": 2.0,
   "min_temporal_lift": 1.05,
-  "min_combo_temporal_lift": 1.1
+  "min_combo_temporal_lift": 1.1,
+  "severe_symptom_min_model_probability": 0.2,
+  "severe_symptom_min_overall_confidence": 0.4,
+  "severe_symptom_names": [
+    "chest pain",
+    "fainting",
+    "shortness of breath",
+    "syncope",
+    "vomiting"
+  ]
 }

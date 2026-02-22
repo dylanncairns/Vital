@@ -353,5 +353,24 @@
     - added unit test to verify user scoping and zero state if stats fetch fails (doesnt break page)
 - fixed some int tests that were messed up by repo reorganization
 
-## Commit 50
-- update runbook worker commands
+## Commit 51 
+- update runbook worker commands + readme
+
+## Commit
+- retrain trigger switched to delta of validated labels, rather than overall events logged
+- patched risk for label leakage where training rows were built from insights, which is not very smart since this is circular logic (learning from something that is based on exactly what you are learning from)
+    - model was learning what old model decided based on, rather than what users were reporting
+    - model initially trained on curated dataset, but as feedback comes in it starts to collect verified/rejected rows as supervised labels
+        - can be an issue as there is now a lot of trust in user opinion, so will need some gating to actually make sure user feedback is high quality (can display to users option to give good quality or just hit a button but will only train on high detail feedback)
+    - after feedback volume is adequate start to gradually increase weight of feedback in training 
+    - split user input with some being excluded from training entirely and some being evaluated on
+        - model eval used to reweight features based on prediction metrics
+    - time split within a users data for early rows used to train adn later rows used to evaluate
+        - simulates real-time prediction
+- gated model promotion, whre candidate model artifact only replaced production artifact if candidate is better on precision metrics
+    - without gate regression is possible
+    - precision metrics used = severe-symptom recall, falso positive rate on bad controls, and calibration error
+    - promote to production if candidate does not regress these metrics
+- severe symptom thresholds added so recurrence-heavy logic does not gate major symptoms which warrant "there is likely a direct cause to derive for this symptom" more than "looks like correlation" attitude
+    - threshold config to support severe symptom set with separate minimums (for model probability and final confidence)
+        - vomiting, chest pain, shortness of breath, fainting, syncope

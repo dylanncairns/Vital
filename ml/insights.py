@@ -199,6 +199,22 @@ def _generic_symptom_penalty(value: str | None) -> float:
     return 0.0
 
 
+def _is_priority_symptom_name(symptom_name: str | None, thresholds: dict[str, float]) -> bool:
+    normalized = " ".join((symptom_name or "").strip().lower().split())
+    if not normalized:
+        return False
+    names = thresholds.get("severe_symptom_names")
+    if isinstance(names, list):
+        normalized_names = {
+            " ".join(str(name or "").strip().lower().split())
+            for name in names
+            if str(name or "").strip()
+        }
+    else:
+        normalized_names = {"vomiting"}
+    return normalized in normalized_names
+
+
 def _conditional_hazard_penalty(
     *,
     item_name: str | None,
@@ -1081,6 +1097,25 @@ def recompute_insights(
                 and float(model_probability) >= float(thresholds["min_model_probability"])
                 and float(final_confidence) >= float(thresholds["min_overall_confidence"])
             )
+            priority_symptom = _is_priority_symptom_name(symptom_name, thresholds)
+            effective_min_model_probability = float(
+                thresholds.get("severe_symptom_min_model_probability", thresholds["min_model_probability"])
+                if priority_symptom
+                else thresholds["min_model_probability"]
+            )
+            effective_min_overall_confidence = float(
+                thresholds.get("severe_symptom_min_overall_confidence", thresholds["min_overall_confidence"])
+                if priority_symptom
+                else thresholds["min_overall_confidence"]
+            )
+            priority_symptom_override_ok = (
+                priority_symptom
+                and unique_exposure_events >= 1.0
+                and bool(evidence["citations"])
+                and float(evidence.get("evidence_strength_score") or 0.0) >= float(thresholds["min_evidence_strength"])
+                and float(model_probability) >= effective_min_model_probability
+                and float(final_confidence) >= effective_min_overall_confidence
+            )
 
             dominant_lag_bucket = None
             if candidate.lag_bucket_counts:
@@ -1114,12 +1149,14 @@ def recompute_insights(
             elif (
                 float(cooccurrence_count) < min_recurrence_for_supported
                 or unique_exposure_events < min_unique_exposure_events_for_supported
-            ) and not (single_exposure_override_ok or recurrence_exception_ok):
+            ) and not (single_exposure_override_ok or recurrence_exception_ok or priority_symptom_override_ok):
                 decision_reason = "suppressed_insufficient_recurrence"
-            elif float(temporal_lift) < min_temporal_lift and not (single_exposure_override_ok or recurrence_exception_ok):
+            elif float(temporal_lift) < min_temporal_lift and not (
+                single_exposure_override_ok or recurrence_exception_ok or priority_symptom_override_ok
+            ):
                 decision_reason = "suppressed_low_temporal_lift"
             elif conditional_hazard_penalty >= 0.20 and float(final_confidence) < float(
-                thresholds["min_overall_confidence"]
+                effective_min_overall_confidence
             ):
                 decision_reason = "suppressed_conditional_evidence_only"
             elif not evidence["citations"]:
@@ -1128,9 +1165,9 @@ def recompute_insights(
                 thresholds["min_evidence_strength"]
             ):
                 decision_reason = "suppressed_low_evidence_strength"
-            elif float(model_probability) < float(thresholds["min_model_probability"]):
+            elif float(model_probability) < effective_min_model_probability:
                 decision_reason = "suppressed_low_model_probability"
-            elif float(final_confidence) < float(thresholds["min_overall_confidence"]):
+            elif float(final_confidence) < effective_min_overall_confidence:
                 decision_reason = "suppressed_low_overall_confidence"
             else:
                 decision_reason = "supported"
@@ -1262,6 +1299,16 @@ def recompute_insights(
                     citation_count=float(ingredient_quality["citation_count"]),
                     contradict_ratio=float(ingredient_quality["contradict_ratio"]),
                 )
+                ingredient_effective_min_model_probability = float(
+                    thresholds.get("severe_symptom_min_model_probability", thresholds["min_model_probability"])
+                    if priority_symptom
+                    else thresholds["min_model_probability"]
+                )
+                ingredient_effective_min_overall_confidence = float(
+                    thresholds.get("severe_symptom_min_overall_confidence", thresholds["min_overall_confidence"])
+                    if priority_symptom
+                    else thresholds["min_overall_confidence"]
+                )
                 ingredient_decision_reason = "supported"
                 if generic_symptom_penalty >= 0.20:
                     ingredient_decision_reason = "suppressed_generic_symptom"
@@ -1283,8 +1330,16 @@ def recompute_insights(
                         >= float(thresholds.get("min_support_direction", 0.10))
                         and float(ingredient_evidence.get("evidence_strength_score") or 0.0)
                         >= float(thresholds["min_evidence_strength"])
-                        and float(ingredient_model_probability) >= float(thresholds["min_model_probability"])
-                        and float(ingredient_final) >= float(thresholds["min_overall_confidence"])
+                        and float(ingredient_model_probability) >= ingredient_effective_min_model_probability
+                        and float(ingredient_final) >= ingredient_effective_min_overall_confidence
+                    )
+                    or (
+                        priority_symptom
+                        and bool(ingredient_evidence["citations"])
+                        and float(ingredient_evidence.get("evidence_strength_score") or 0.0)
+                        >= float(thresholds["min_evidence_strength"])
+                        and float(ingredient_model_probability) >= ingredient_effective_min_model_probability
+                        and float(ingredient_final) >= ingredient_effective_min_overall_confidence
                     )
                 ):
                     ingredient_decision_reason = "suppressed_insufficient_recurrence"
@@ -1294,9 +1349,9 @@ def recompute_insights(
                     thresholds["min_evidence_strength"]
                 ):
                     ingredient_decision_reason = "suppressed_low_evidence_strength"
-                elif float(ingredient_model_probability) < float(thresholds["min_model_probability"]):
+                elif float(ingredient_model_probability) < ingredient_effective_min_model_probability:
                     ingredient_decision_reason = "suppressed_low_model_probability"
-                elif float(ingredient_final) < float(thresholds["min_overall_confidence"]):
+                elif float(ingredient_final) < ingredient_effective_min_overall_confidence:
                     ingredient_decision_reason = "suppressed_low_overall_confidence"
 
                 ingredient_summary = (
@@ -1586,6 +1641,24 @@ def recompute_insights(
                 thresholds.get("min_combo_pair_support_direction", thresholds.get("min_support_direction", 0.10))
             )
             min_combo_temporal_lift = float(thresholds.get("min_combo_temporal_lift", 1.10))
+            priority_symptom = _is_priority_symptom_name(symptom_name, thresholds)
+            effective_min_model_probability = float(
+                thresholds.get("severe_symptom_min_model_probability", thresholds["min_model_probability"])
+                if priority_symptom
+                else thresholds["min_model_probability"]
+            )
+            effective_min_overall_confidence = float(
+                thresholds.get("severe_symptom_min_overall_confidence", thresholds["min_overall_confidence"])
+                if priority_symptom
+                else thresholds["min_overall_confidence"]
+            )
+            priority_combo_override_ok = (
+                priority_symptom
+                and bool(evidence["citations"])
+                and float(evidence.get("evidence_strength_score") or 0.0) >= float(thresholds["min_evidence_strength"])
+                and float(model_probability) >= effective_min_model_probability
+                and float(final_confidence) >= effective_min_overall_confidence
+            )
             both_item_evidence_ok = (
                 float(evidence_quality_a.get("citation_count") or 0.0) >= min_combo_item_citations
                 and float(evidence_quality_b.get("citation_count") or 0.0) >= min_combo_item_citations
@@ -1609,9 +1682,9 @@ def recompute_insights(
             elif (
                 float(cooccurrence_count) < min_combo_recurrence_for_supported
                 or unique_exposure_events < min_combo_unique_exposure_events_for_supported
-            ):
+            ) and not priority_combo_override_ok:
                 decision_reason = "suppressed_insufficient_recurrence"
-            elif float(temporal_lift) < min_combo_temporal_lift:
+            elif float(temporal_lift) < min_combo_temporal_lift and not priority_combo_override_ok:
                 decision_reason = "suppressed_low_temporal_lift"
             elif not evidence["citations"]:
                 decision_reason = "suppressed_no_citations"
@@ -1619,9 +1692,9 @@ def recompute_insights(
                 thresholds["min_evidence_strength"]
             ):
                 decision_reason = "suppressed_low_evidence_strength"
-            elif float(model_probability) < float(thresholds["min_model_probability"]):
+            elif float(model_probability) < effective_min_model_probability:
                 decision_reason = "suppressed_low_model_probability"
-            elif float(final_confidence) < float(thresholds["min_overall_confidence"]):
+            elif float(final_confidence) < effective_min_overall_confidence:
                 decision_reason = "suppressed_low_overall_confidence"
             else:
                 decision_reason = "supported"

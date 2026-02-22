@@ -13,6 +13,7 @@ from api.worker.jobs import (
     count_jobs,
     enqueue_background_job,
     list_pending_jobs,
+    maybe_enqueue_model_retrain,
 )
 from ml.rag import ingest_paper_claim_chunks
 from tests.db_test_utils import reset_test_database
@@ -259,6 +260,43 @@ class BackgroundJobsTests(unittest.TestCase):
         self.assertEqual(result["jobs_failed"], 0)
         self.assertEqual(result["citation_audit_jobs_done"], 1)
         audit_mock.assert_called_once()
+
+    def test_model_retrain_not_enqueued_without_validated_labels(self) -> None:
+        job_id = maybe_enqueue_model_retrain(trigger_user_id=1, verification_delta_threshold=1)
+        self.assertIsNone(job_id)
+
+    def test_model_retrain_enqueued_on_validation_delta(self) -> None:
+        for idx in range(2, 8):
+            self._exec(
+                "INSERT INTO items (id, name, category) VALUES (%s, %s, 'food')",
+                (idx, f"item-{idx}"),
+            )
+            self._exec(
+                "INSERT INTO symptoms (id, name, description) VALUES (%s, %s, 'd')",
+                (idx, f"symptom-{idx}"),
+            )
+            self._exec(
+                """
+                INSERT INTO insight_verifications (user_id, item_id, symptom_id, verified, rejected, created_at, updated_at)
+                VALUES (1, %s, %s, 1, 0, '2026-01-02T00:00:00Z', '2026-01-02T00:00:00Z')
+                """,
+                (idx, idx),
+            )
+        job_id = maybe_enqueue_model_retrain(trigger_user_id=1, verification_delta_threshold=5)
+        self.assertIsNotNone(job_id)
+        assert job_id is not None
+
+        conn = api.db.get_connection()
+        try:
+            row = conn.execute(
+                "SELECT job_type, status FROM background_jobs WHERE id = %s",
+                (job_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        assert row is not None
+        self.assertEqual(row["job_type"], "model_retrain")
+        self.assertEqual(row["status"], "pending")
 
 
 if __name__ == "__main__":

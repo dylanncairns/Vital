@@ -536,6 +536,9 @@ def save_decision_thresholds(
     min_combo_unique_exposure_events_for_supported: float = 2.0,
     min_temporal_lift: float = 1.05,
     min_combo_temporal_lift: float = 1.10,
+    severe_symptom_min_model_probability: float = 0.20,
+    severe_symptom_min_overall_confidence: float = 0.40,
+    severe_symptom_names: list[str] | None = None,
     target_precision: float,
     source: str,
     path: Path = DEFAULT_THRESHOLDS_PATH,
@@ -564,6 +567,15 @@ def save_decision_thresholds(
         ),
         "min_temporal_lift": max(0.5, float(min_temporal_lift)),
         "min_combo_temporal_lift": max(0.5, float(min_combo_temporal_lift)),
+        "severe_symptom_min_model_probability": clamp(severe_symptom_min_model_probability, 0.0, 1.0),
+        "severe_symptom_min_overall_confidence": clamp(severe_symptom_min_overall_confidence, 0.0, 1.0),
+        "severe_symptom_names": sorted(
+            {
+                " ".join(str(name or "").strip().lower().split())
+                for name in (severe_symptom_names or [])
+                if str(name or "").strip()
+            }
+        ),
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2))
@@ -587,6 +599,15 @@ def get_decision_thresholds(path: Path = DEFAULT_THRESHOLDS_PATH) -> dict[str, f
         "min_combo_unique_exposure_events_for_supported": 2.0,
         "min_temporal_lift": 1.05,
         "min_combo_temporal_lift": 1.10,
+        "severe_symptom_min_model_probability": 0.20,
+        "severe_symptom_min_overall_confidence": 0.40,
+        "severe_symptom_names": [
+            "chest pain",
+            "fainting",
+            "shortness of breath",
+            "syncope",
+            "vomiting",
+        ],
     }
     if not path.exists():
         return defaults
@@ -692,6 +713,31 @@ def get_decision_thresholds(path: Path = DEFAULT_THRESHOLDS_PATH) -> dict[str, f
         0.5,
         _safe_float(payload.get("min_combo_temporal_lift"), defaults["min_combo_temporal_lift"]),
     )
+    severe_symptom_min_model_probability = clamp(
+        _safe_float(
+            payload.get("severe_symptom_min_model_probability"),
+            defaults["severe_symptom_min_model_probability"],
+        ),
+        0.0,
+        1.0,
+    )
+    severe_symptom_min_overall_confidence = clamp(
+        _safe_float(
+            payload.get("severe_symptom_min_overall_confidence"),
+            defaults["severe_symptom_min_overall_confidence"],
+        ),
+        0.0,
+        1.0,
+    )
+    severe_symptom_names_raw = payload.get("severe_symptom_names", defaults["severe_symptom_names"])
+    severe_symptom_names: list[str] = []
+    if isinstance(severe_symptom_names_raw, list):
+        for name in severe_symptom_names_raw:
+            normalized = " ".join(str(name or "").strip().lower().split())
+            if normalized:
+                severe_symptom_names.append(normalized)
+    if not severe_symptom_names:
+        severe_symptom_names = list(defaults["severe_symptom_names"])
     return {
         "min_evidence_strength": min_evidence_strength,
         "min_model_probability": min_model_probability,
@@ -709,6 +755,9 @@ def get_decision_thresholds(path: Path = DEFAULT_THRESHOLDS_PATH) -> dict[str, f
         "min_combo_unique_exposure_events_for_supported": min_combo_unique_exposure_events_for_supported,
         "min_temporal_lift": min_temporal_lift,
         "min_combo_temporal_lift": min_combo_temporal_lift,
+        "severe_symptom_min_model_probability": severe_symptom_min_model_probability,
+        "severe_symptom_min_overall_confidence": severe_symptom_min_overall_confidence,
+        "severe_symptom_names": severe_symptom_names,
     }
 
 
@@ -783,11 +832,15 @@ def build_training_rows_from_insights(conn) -> tuple[list[list[float]], list[int
     return x, y
 
 
-def build_training_rows_from_user_feedback(conn) -> tuple[list[list[float]], list[int], list[int]]:
+def build_training_rows_from_user_feedback_detailed(conn) -> list[dict[str, Any]]:
     rows = conn.execute(
         """
         SELECT
             i.user_id AS user_id,
+            i.item_id AS item_id,
+            it.name AS item_name,
+            i.symptom_id AS symptom_id,
+            s.name AS symptom_name,
             d.time_gap_min_minutes,
             d.time_gap_avg_minutes,
             d.cooccurrence_count,
@@ -800,12 +853,17 @@ def build_training_rows_from_user_feedback(conn) -> tuple[list[list[float]], lis
             i.evidence_score,
             i.citations_json,
             COALESCE(v.verified, 0) AS verified,
-            COALESCE(v.rejected, 0) AS rejected
+            COALESCE(v.rejected, 0) AS rejected,
+            COALESCE(v.updated_at, v.created_at, i.created_at) AS feedback_ts
         FROM insight_verifications v
         JOIN insights i
           ON i.user_id = v.user_id
          AND i.item_id = v.item_id
          AND i.symptom_id = v.symptom_id
+        JOIN items it
+          ON it.id = i.item_id
+        JOIN symptoms s
+          ON s.id = i.symptom_id
         JOIN derived_features d
           ON d.user_id = i.user_id
          AND d.item_id = i.item_id
@@ -823,9 +881,7 @@ def build_training_rows_from_user_feedback(conn) -> tuple[list[list[float]], lis
         """
     ).fetchall()
 
-    x: list[list[float]] = []
-    y: list[int] = []
-    groups: list[int] = []
+    out: list[dict[str, Any]] = []
     for row in rows:
         try:
             citations = json.loads(row["citations_json"] or "[]")
@@ -866,8 +922,29 @@ def build_training_rows_from_user_feedback(conn) -> tuple[list[list[float]], lis
         }
         # verified => positive label, rejected => negative label (rejected wins if inconsistent row)
         label = 0 if int(row["rejected"] or 0) == 1 else 1
-        x.append(build_feature_vector(feature_map))
-        y.append(label)
+        out.append(
+            {
+                "feature_vector": build_feature_vector(feature_map),
+                "label": int(label),
+                "user_id": _safe_int(row["user_id"], 0),
+                "item_id": _safe_int(row["item_id"], 0),
+                "item_name": str(row["item_name"] or ""),
+                "symptom_id": _safe_int(row["symptom_id"], 0),
+                "symptom_name": str(row["symptom_name"] or ""),
+                "feedback_ts": str(row["feedback_ts"] or ""),
+            }
+        )
+    return out
+
+
+def build_training_rows_from_user_feedback(conn) -> tuple[list[list[float]], list[int], list[int]]:
+    detailed_rows = build_training_rows_from_user_feedback_detailed(conn)
+    x: list[list[float]] = []
+    y: list[int] = []
+    groups: list[int] = []
+    for row in detailed_rows:
+        x.append(list(row["feature_vector"]))
+        y.append(int(row["label"]))
         groups.append(_safe_int(row["user_id"], 0))
     return x, y, groups
 

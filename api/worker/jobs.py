@@ -15,7 +15,7 @@ JOB_CITATION_AUDIT = "citation_audit"
 DEFAULT_MAX_FAILED_ATTEMPTS = 5
 DEFAULT_FAILED_RETRY_BASE_SECONDS = 30
 DEFAULT_FAILED_RETRY_MAX_SECONDS = 600
-DEFAULT_RETRAIN_EVENT_DELTA = int(os.getenv("MODEL_RETRAIN_EVENT_DELTA", "25"))
+DEFAULT_RETRAIN_VERIFICATION_DELTA = int(os.getenv("MODEL_RETRAIN_VERIFICATION_DELTA", "10"))
 
 
 def _now_iso() -> str:
@@ -39,6 +39,18 @@ def _retry_delay_seconds(attempts: int) -> int:
     exponent = max(0, attempts - 1)
     raw = DEFAULT_FAILED_RETRY_BASE_SECONDS * (2 ** exponent)
     return min(DEFAULT_FAILED_RETRY_MAX_SECONDS, raw)
+
+
+def _count_validated_linkage_events(conn) -> int:
+    row = conn.execute(
+        """
+        SELECT COUNT(*) AS c
+        FROM insight_verifications
+        WHERE COALESCE(verified, 0) = 1
+           OR COALESCE(rejected, 0) = 1
+        """
+    ).fetchone()
+    return int(row["c"]) if row is not None else 0
 
 
 def enqueue_background_job(
@@ -255,7 +267,7 @@ def count_jobs(*, user_id: int | None = None, status: str | None = None) -> int:
 def maybe_enqueue_model_retrain(
     *,
     trigger_user_id: int,
-    event_delta_threshold: int = DEFAULT_RETRAIN_EVENT_DELTA,
+    verification_delta_threshold: int = DEFAULT_RETRAIN_VERIFICATION_DELTA,
 ) -> int | None:
     conn = get_connection()
     try:
@@ -271,9 +283,7 @@ def maybe_enqueue_model_retrain(
         if existing is not None:
             return None
 
-        total_exposures = int(conn.execute("SELECT COUNT(*) AS c FROM exposure_events").fetchone()["c"])
-        total_symptoms = int(conn.execute("SELECT COUNT(*) AS c FROM symptom_events").fetchone()["c"])
-        total_events = total_exposures + total_symptoms
+        total_validated_labels = _count_validated_linkage_events(conn)
 
         state = conn.execute(
             """
@@ -284,16 +294,22 @@ def maybe_enqueue_model_retrain(
         ).fetchone()
         last_trained = int(state["last_trained_total_events"]) if state is not None else 0
         last_enqueued = int(state["last_enqueued_total_events"]) if state is not None else 0
-        baseline = max(last_trained, last_enqueued)
-        if total_events - baseline < max(1, int(event_delta_threshold)):
+        # Backward-compatible schema: these columns now track validated-label counts.
+        # Clamp stale event-based counters so deployment upgrades start retraining again.
+        if last_trained > total_validated_labels:
+            last_trained = total_validated_labels
+        if last_enqueued > total_validated_labels:
+            last_enqueued = total_validated_labels
+        baseline = last_trained
+        if total_validated_labels - baseline < max(1, int(verification_delta_threshold)):
             return None
 
         now_iso = _now_iso()
         payload = {
-            "trigger": "event_delta_threshold",
-            "total_events": total_events,
-            "last_trained_total_events": last_trained,
-            "event_delta_threshold": int(event_delta_threshold),
+            "trigger": "verification_delta_threshold",
+            "total_validated_labels": total_validated_labels,
+            "last_trained_total_labels": last_trained,
+            "verification_delta_threshold": int(verification_delta_threshold),
         }
         cursor = conn.execute(
             """
@@ -318,7 +334,7 @@ def maybe_enqueue_model_retrain(
             SET last_enqueued_total_events = %s, updated_at = %s
             WHERE id = 1
             """,
-            (total_events, now_iso),
+            (total_validated_labels, now_iso),
         )
         conn.commit()
         return int(cursor.fetchone()["id"])
@@ -330,9 +346,7 @@ def mark_model_retrain_completed(*, trained_total_events: int | None = None) -> 
     conn = get_connection()
     try:
         if trained_total_events is None:
-            total_exposures = int(conn.execute("SELECT COUNT(*) AS c FROM exposure_events").fetchone()["c"])
-            total_symptoms = int(conn.execute("SELECT COUNT(*) AS c FROM symptom_events").fetchone()["c"])
-            trained_total_events = total_exposures + total_symptoms
+            trained_total_events = _count_validated_linkage_events(conn)
         conn.execute(
             """
             UPDATE model_retrain_state
