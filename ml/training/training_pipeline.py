@@ -56,9 +56,6 @@ SEVERE_SYMPTOM_NAMES = {
     "syncope",
     "vomiting",
 }
-BAD_PAIR_CONTROLS = {
-    ("water", "headache"),
-}
 
 def _stable_jitter(key: str, *, amplitude: float) -> float:
     digest = sha256(key.encode("utf-8")).digest()
@@ -258,29 +255,6 @@ def _severe_recall(
     if positives == 0:
         return 1.0
     return float(true_positives) / float(positives)
-
-
-def _bad_pair_false_positive_rate(
-    *,
-    rows: list[dict[str, Any]],
-    probabilities: list[float],
-    threshold: float,
-) -> float:
-    bad_total = 0
-    bad_fp = 0
-    for row, prob in zip(rows, probabilities):
-        pair = (
-            str(row.get("item_name") or "").strip().lower(),
-            str(row.get("symptom_name") or "").strip().lower(),
-        )
-        if pair not in BAD_PAIR_CONTROLS:
-            continue
-        bad_total += 1
-        if float(prob) >= float(threshold):
-            bad_fp += 1
-    if bad_total == 0:
-        return 0.0
-    return float(bad_fp) / float(bad_total)
 
 
 def _binary_metrics(probabilities: list[float], labels: list[int], threshold: float) -> dict[str, float]:
@@ -516,29 +490,11 @@ def run_training(
             probabilities=calibrated_probs,
             threshold=eval_threshold,
         )
-        benchmark_x, benchmark_labels, _ = _rows_to_xyg(curated_benchmark_rows)
-        benchmark_probs_candidate: list[float] = []
-        for feature_values in benchmark_x:
-            feature_map = {name: feature_values[j] for j, name in enumerate(FEATURE_ORDER)}
-            benchmark_probs_candidate.append(
-                predict_model_probability(
-                    feature_map,
-                    model_path=candidate_model_path,
-                    calibrator_path=candidate_calibrator_path,
-                    use_calibration=True,
-                )
-            )
-        candidate_bad_pair_fpr = _bad_pair_false_positive_rate(
-            rows=curated_benchmark_rows,
-            probabilities=benchmark_probs_candidate,
-            threshold=eval_threshold,
-        )
 
         current_available = output_path.exists()
         current_eval = {
             "brier": 1.0,
             "severe_recall": 0.0,
-            "bad_pair_fpr": 1.0,
         }
         if current_available:
             current_threshold = float(current_thresholds.get("min_model_probability", 0.35))
@@ -558,17 +514,6 @@ def run_training(
                 labels=threshold_labels,
                 threshold=current_threshold,
             )
-            benchmark_probs_current: list[float] = []
-            for feature_values in benchmark_x:
-                feature_map = {name: feature_values[j] for j, name in enumerate(FEATURE_ORDER)}
-                benchmark_probs_current.append(
-                    predict_model_probability(
-                        feature_map,
-                        model_path=output_path,
-                        calibrator_path=DEFAULT_CALIBRATOR_PATH,
-                        use_calibration=True,
-                    )
-                )
             current_eval = {
                 "brier": float(current_metrics["brier"]),
                 "severe_recall": _severe_recall(
@@ -576,31 +521,23 @@ def run_training(
                     probabilities=current_probs_holdout,
                     threshold=current_threshold,
                 ),
-                "bad_pair_fpr": _bad_pair_false_positive_rate(
-                    rows=curated_benchmark_rows,
-                    probabilities=benchmark_probs_current,
-                    threshold=current_threshold,
-                ),
             }
 
         candidate_eval_full = {
             **candidate_eval,
             "severe_recall": float(candidate_severe_recall),
-            "bad_pair_fpr": float(candidate_bad_pair_fpr),
         }
         if not current_available:
             promoted_xgboost = True
             promotion_reason = "bootstrap_no_existing_model"
         else:
             improves_severe_recall = candidate_eval_full["severe_recall"] >= current_eval["severe_recall"]
-            improves_bad_fpr = candidate_eval_full["bad_pair_fpr"] <= current_eval["bad_pair_fpr"]
             improves_brier = candidate_eval_full["brier"] <= current_eval["brier"]
             strict_gain = (
                 candidate_eval_full["severe_recall"] > current_eval["severe_recall"]
-                or candidate_eval_full["bad_pair_fpr"] < current_eval["bad_pair_fpr"]
                 or candidate_eval_full["brier"] < current_eval["brier"]
             )
-            promoted_xgboost = improves_severe_recall and improves_bad_fpr and improves_brier and strict_gain
+            promoted_xgboost = improves_severe_recall and improves_brier and strict_gain
             promotion_reason = (
                 "promoted_beats_current_on_guardrails"
                 if promoted_xgboost

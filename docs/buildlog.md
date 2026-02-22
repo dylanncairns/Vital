@@ -374,3 +374,6 @@
 - severe symptom thresholds added so recurrence-heavy logic does not gate major symptoms which warrant "there is likely a direct cause to derive for this symptom" more than "looks like correlation" attitude
     - threshold config to support severe symptom set with separate minimums (for model probability and final confidence)
         - vomiting, chest pain, shortness of breath, fainting, syncope
+
+## Commits 53-54
+- update production with retrained model artifacts

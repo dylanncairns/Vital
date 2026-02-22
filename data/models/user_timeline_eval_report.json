@@ -1,5 +1,5 @@
 {
-  "created_at": "2026-02-22T00:10:05.751510+00:00",
+  "created_at": "2026-02-22T00:15:24.192937+00:00",
   "dataset_source": "hybrid",
   "phase": "seed_bootstrap",
   "threshold_used": 0.17102833271026613,
@@ -28,11 +28,11 @@
       "bad_pair_fpr": 0.0
     },
     "current": {
-      "brier": 0.44729130571837067,
+      "brier": 0.4145534126892263,
       "severe_recall": 1.0,
       "bad_pair_fpr": 0.0
     },
-    "promoted": true,
-    "reason": "promoted_beats_current_on_guardrails"
+    "promoted": false,
+    "reason": "rejected_guardrail_regression"
   }
 }

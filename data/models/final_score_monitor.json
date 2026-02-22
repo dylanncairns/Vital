@@ -1,5 +1,5 @@
 {
-  "created_at": "2026-02-22T00:10:05.824668+00:00",
+  "created_at": "2026-02-22T00:15:24.259129+00:00",
   "dataset_source": "hybrid",
   "guardrails": {
     "runtime_max_high_conf_ratio": 0.9,
@@ -78,18 +78,35 @@
       },
       "promoted": false,
       "reason": "guardrail_fail_auc_floor"
+    },
+    {
+      "created_at": "2026-02-22T00:15:24.259129+00:00",
+      "dataset_source": "hybrid",
+      "metrics": {
+        "auc": 0.5,
+        "average_precision": 0.011957414571615721,
+        "brier": 0.0001437144974745281,
+        "high_conf_ratio": 0.0,
+        "mean_probability": 0.011957414571615721,
+        "negatives": 31.0,
+        "positives": 0.0,
+        "rows": 31.0,
+        "std_probability": 0.0008571663998548088
+      },
+      "promoted": false,
+      "reason": "guardrail_fail_auc_floor"
     }
   ],
   "metrics": {
     "auc": 0.5,
-    "average_precision": 0.01202168098145599,
-    "brier": 0.00014836771181593093,
+    "average_precision": 0.011957414571615721,
+    "brier": 0.0001437144974745281,
     "high_conf_ratio": 0.0,
-    "mean_probability": 0.01202168098145599,
+    "mean_probability": 0.011957414571615721,
     "negatives": 31.0,
     "positives": 0.0,
     "rows": 31.0,
-    "std_probability": 0.0019613511149282146
+    "std_probability": 0.0008571663998548088
   },
   "promoted": false,
   "reason": "guardrail_fail_auc_floor",
