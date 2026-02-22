@@ -410,3 +410,7 @@
 ## Commit 67
 - reduced brittle claim-row acceptance gating
 - reduced novel evidence gating thresholds
+
+## Commit 68
+- added better handling of timing for "poor sleep" and aliases 
+    - phrase can come in suprisingly many forms 

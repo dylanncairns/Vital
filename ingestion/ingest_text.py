@@ -405,6 +405,45 @@ def _resolve_bedtime_clause_time(
     return resolved_local.astimezone(timezone.utc).isoformat()
 
 
+def _resolve_sleep_deprivation_clause_time(
+    text: str,
+    *,
+    context_timestamp: str | None,
+    context_start: str | None,
+    context_end: str | None,
+    local_tz=None,
+) -> str | None:
+    if re.search(
+        r"\b(barely slept|hardly slept|didn't sleep|didnt sleep|no sleep|poor sleep|all[- ]?nighter|sleep deprivation|sleep deprived)\b",
+        text,
+        re.I,
+    ) is None:
+        return None
+    # Respect explicit time/date if present.
+    if _TIME_AT_RE.search(text) or _MIDNIGHT_RE.search(text) or _NOON_RE.search(text) or _has_strong_date_anchor(text):
+        return None
+    anchor_iso = _context_anchor_iso(
+        context_timestamp=context_timestamp,
+        context_start=context_start,
+        context_end=context_end,
+    )
+    tz = local_tz or _LOCAL_TZ
+    if anchor_iso:
+        try:
+            anchor = datetime.fromisoformat(anchor_iso.replace("Z", "+00:00"))
+            anchor_local = anchor.astimezone(tz)
+        except ValueError:
+            anchor_local = datetime.now().astimezone(tz)
+    else:
+        anchor_local = datetime.now().astimezone(tz)
+    # Sleep deprivation clauses usually refer to the overnight period following
+    # the contextual day/event, not a generic midday anchor.
+    if anchor_local.hour >= 10:
+        anchor_local = anchor_local + timedelta(days=1)
+    resolved_local = anchor_local.replace(hour=6, minute=0, second=0, microsecond=0)
+    return resolved_local.astimezone(timezone.utc).isoformat()
+
+
 def _parse_days_ago(text: str) -> int | None:
     match = _DAYS_AGO_RE.search(text)
     if not match:
@@ -1547,6 +1586,7 @@ def parse_text_events(text: str, *, local_tz=None) -> list[ParsedEvent]:
         and (
             full_text_time_signal_mentions >= 2
             or re.search(r"\b(and now|later|after that|afterwards)\b", text_lower) is not None
+            or re.search(r"\band\s+(?:this|next|yesterday)\s+(?:morning|afternoon|evening|night)\b", text_lower) is not None
         )
     )
     parsed_events: list[ParsedEvent] = []
@@ -1697,12 +1737,23 @@ def parse_text_events(text: str, *, local_tz=None) -> list[ParsedEvent]:
             )
             if bedtime_clause_ts is not None and clause_ts is None and clause_start is None and clause_end is None:
                 clause_ts, clause_start, clause_end = bedtime_clause_ts, None, None
+            sleep_clause_ts = _resolve_sleep_deprivation_clause_time(
+                clause,
+                context_timestamp=last_context_timestamp or seg_ts,
+                context_start=last_context_start or seg_start,
+                context_end=last_context_end or seg_end,
+                local_tz=local_tz,
+            )
+            if sleep_clause_ts is not None and clause_ts is None and clause_start is None and clause_end is None:
+                clause_ts, clause_start, clause_end = sleep_clause_ts, None, None
             clause_parsed = _parse_event_without_api(clause)
             if clause_parsed is not None:
                 if anaphoric_clause_ts is not None:
                     clause_parsed = _override_parsed_timestamp(clause_parsed, anaphoric_clause_ts)
                 elif bedtime_clause_ts is not None and clause_parsed.timestamp is None:
                     clause_parsed = _override_parsed_timestamp(clause_parsed, bedtime_clause_ts)
+                elif sleep_clause_ts is not None and clause_parsed.timestamp is None:
+                    clause_parsed = _override_parsed_timestamp(clause_parsed, sleep_clause_ts)
                 elif segment_has_strong_date_anchor and not _has_strong_date_anchor(clause):
                     # Preserve explicit segment-level date anchor (e.g., "On February 10 ...")
                     # for weak daypart-only clauses split from the same sentence.
