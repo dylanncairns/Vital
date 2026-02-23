@@ -157,6 +157,14 @@ def process_background_jobs_batch(payload: ProcessJobsIn):
                         )
                     )
                 ]
+                sync_result = {
+                    "claims_added": 0,
+                    "retrieval_stage_rows": 0,
+                    "rows_rejected_quality": 0,
+                    "duplicate_claim_rows_skipped": 0,
+                    "candidates_without_rows": 0,
+                }
+                sync_retry_result = None
                 if candidates:
                     conn = get_connection()
                     try:
@@ -200,8 +208,12 @@ def process_background_jobs_batch(payload: ProcessJobsIn):
                             raise
                         finally:
                             conn_retry.close()
-                    else:
-                        sync_retry_result = None
+                else:
+                    raise RuntimeError(
+                        "no matching candidate found for queued evidence job "
+                        f"(user_id={user_id}, item_id={int(item_id)}, symptom_id={int(symptom_id)}, "
+                        f"is_combo={int(requested_is_combo)}, secondary_item_id={requested_secondary_item_id_int})"
+                    )
                 recompute_insights(user_id, target_pairs={(int(item_id), int(symptom_id))})
                 conn_check = get_connection()
                 try:

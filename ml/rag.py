@@ -966,21 +966,24 @@ def _llm_retrieve_evidence_rows(
         "Use ONLY retrieved file_search chunks from the configured vector store. "
         "Return JSON that exactly matches the schema. No extra keys, no missing keys. "
         "If evidence is insufficient, return empty citations/evidence arrays and explain limits in answer. "
-        "Treat the candidate exposure literally and specifically; do not substitute broader hazard contexts. "
+        "Treat the candidate exposure specifically; do not substitute broader hazard contexts. "
         "You MAY use close clinical or lay aliases for the same exposure/symptom concept "
         "(e.g., sleep deprivation for poor sleep, shift work for long shift, meal skipping for fasting, "
         "palpitations for racing heart), but only when the cited snippet/title clearly refers to the same concept. "
         "Do not broaden to a different exposure category or a generic risk factor. "
         "Example: ordinary 'water' should NOT be treated as contaminated/waterborne outbreak exposure "
         "unless the candidate text explicitly indicates contamination or unsafe water. "
-        "Do NOT treat loosely related occupational/cohort populations as evidence unless the candidate exposure "
-        "itself is explicitly present in the cited snippet/title. "
-        "If the citation discusses a different exposure than the candidate, exclude it. "
+        "Do NOT treat loosely related occupational/cohort populations as evidence unless the cited study context "
+        "clearly matches the candidate exposure concept. "
+        "If the citation discusses a different exposure than the candidate concept, exclude it. "
         "DO NOT invent citation_ids, file_ids, chunk_ids, DOI, URLs, titles, or years. "
         "Each evidence.supports entry must reference a citation_id present in citations. "
-        "For each support, assign study_design and numeric metrics from the retrieved text only: "
-        "study_quality_score, population_match, temporality_match, risk_of_bias, llm_confidence in [0,1], "
-        "and relevance_label as high/moderate/low. "
+        "For each support, populate citation linkage and snippet first. "
+        "Include study_design and numeric metrics when the retrieved text supports them; "
+        "leave optional metrics null rather than inventing values. "
+        "If you can only return a few supports, prefer fewer fully grounded supports with correct linkage/snippets. "
+        "Prefer FEWER supports/citations that have full population of all requested fields over MORE supports/citations "
+        "with missing metrics, missing linkage fields, or weak formatting. "
         "Also assign support_direction_score in [-1,1] where -1 is contradictory, 0 is mixed/unclear, "
         "and +1 is strongly supportive for the exact exposure-symptom linkage and temporal pattern. "
         + (
@@ -1018,20 +1021,20 @@ def _llm_retrieve_evidence_rows(
             "Retrieve evidence linking exposure to symptom.",
             "Return JSON matching schema exactly.",
             "Citations/supports must map to retrieved results.",
-            "Reject citations where candidate exposure term is not explicitly present in snippet/title.",
-            "Clinical/lay aliases are allowed only when clearly equivalent to the provided exposure/symptom in the retrieved snippet/title.",
+            "Return only citations/supports that clearly match the candidate exposure concept and target symptom in the cited study context.",
+            "Exact wording is preferred, but clinically/lay equivalent wording is acceptable when clearly referring to the same concept.",
             (
                 "For combo candidates, every support must ground BOTH exposures to the SAME citation "
                 "(title + snippet + claim/support may be combined as context for that citation)."
                 if is_combo
-                else "For single candidates, supports must explicitly mention the candidate exposure."
+                else "For single candidates, supports must clearly refer to the candidate exposure concept."
             ),
             (
                 "For combo candidates, do not require the two exposures to appear in the same sentence if they are "
                 "both clearly present within the same citation context and linked to the target symptom/outcome."
                 if is_combo
                 else (
-                    "Prefer exact exposure-symptom wording over broad related contexts."
+                    "Prefer exact exposure-symptom wording, but do not return empty evidence solely because the paper uses an equivalent clinical term."
                     if not relaxed_single
                     else "On this relaxed single-item pass, exact wording is preferred but clearly equivalent exposure/symptom terminology is acceptable when grounded to the same citation."
                 )
@@ -1041,9 +1044,10 @@ def _llm_retrieve_evidence_rows(
                 if (is_combo or not relaxed_single)
                 else f"Return up to {max_evidence_rows} strongest evidence rows; on this relaxed pass, moderate relevance rows are acceptable if grounded and conceptually equivalent."
             ),
-            "Populate support-level study quality and match metrics strictly in [0,1].",
-            "Populate relevance_label for each support as one of: high, moderate, low.",
-            "Populate support_direction_score in [-1,1] for each support.",
+            "Populate support_direction_score in [-1,1] for each support; include other support metrics when grounded in the retrieved text.",
+            "If a metric is not directly supported by the retrieved text, leave it null instead of guessing.",
+            "Populate relevance_label when possible as one of: high, moderate, low.",
+            "Prefer fewer fully grounded supports/citations with correct linkage/snippets over more incomplete entries.",
         ],
     }
 
@@ -1107,7 +1111,11 @@ def _llm_retrieve_evidence_rows(
         return []
 
     citations = parsed.get("citations")
+    if isinstance(citations, dict):
+        citations = [citations]
     evidence_blocks = parsed.get("evidence")
+    if isinstance(evidence_blocks, dict):
+        evidence_blocks = [evidence_blocks]
     if not isinstance(citations, list) or not isinstance(evidence_blocks, list):
         return []
 
@@ -1140,6 +1148,12 @@ def _llm_retrieve_evidence_rows(
             continue
         claim = block.get("claim")
         supports = block.get("supports")
+        if isinstance(supports, dict):
+            supports = [supports]
+        if supports is None and isinstance(block.get("support"), dict):
+            supports = [block.get("support")]
+        if supports is None and isinstance(block.get("support"), list):
+            supports = block.get("support")
         if not isinstance(claim, str) or not claim.strip() or not isinstance(supports, list):
             continue
         claim_polarity = _infer_polarity_strength(claim)
@@ -1257,6 +1271,12 @@ def _llm_retrieve_evidence_rows(
                 continue
             claim = block.get("claim")
             supports = block.get("supports")
+            if isinstance(supports, dict):
+                supports = [supports]
+            if supports is None and isinstance(block.get("support"), dict):
+                supports = [block.get("support")]
+            if supports is None and isinstance(block.get("support"), list):
+                supports = block.get("support")
             if not isinstance(claim, str) or not claim.strip() or not isinstance(supports, list):
                 continue
             polarity = _infer_polarity_strength(claim)
