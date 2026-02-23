@@ -936,8 +936,15 @@ def _llm_retrieve_evidence_rows(
         "and +1 is strongly supportive for the exact exposure-symptom linkage and temporal pattern. "
         + (
             "This candidate is a two-exposure combination. "
-            "Only include supports where BOTH exposures are explicitly present in the same citation context. "
-            "Exclude single-exposure papers."
+            "Only include supports where BOTH exposures are explicitly present for the SAME cited study/paper. "
+            "For combo candidates, 'same citation context' means the title + returned snippet + extracted claim/support "
+            "for one citation, not necessarily the exact same sentence. "
+            "It is acceptable if one exposure appears in the title/claim and the other appears in the snippet, "
+            "as long as both clearly refer to the same cited study and same candidate concept. "
+            "Clinical/lay aliases are allowed when clearly equivalent (e.g., sleep deprivation for poor sleep, "
+            "shift work/night shift for long shift, meal skipping for fasting, palpitations for racing heart). "
+            "Do NOT infer a combo from two separate citations or from general co-risk-factor discussion. "
+            "Exclude supports where only one exposure is present for the cited study."
             if is_combo
             else ""
         )
@@ -956,9 +963,16 @@ def _llm_retrieve_evidence_rows(
             "Reject citations where candidate exposure term is not explicitly present in snippet/title.",
             "Clinical/lay aliases are allowed only when clearly equivalent to the provided exposure/symptom in the retrieved snippet/title.",
             (
-                "For combo candidates, every support must explicitly mention both exposures."
+                "For combo candidates, every support must ground BOTH exposures to the SAME citation "
+                "(title + snippet + claim/support may be combined as context for that citation)."
                 if is_combo
                 else "For single candidates, supports must explicitly mention the candidate exposure."
+            ),
+            (
+                "For combo candidates, do not require the two exposures to appear in the same sentence if they are "
+                "both clearly present within the same citation context and linked to the target symptom/outcome."
+                if is_combo
+                else "Prefer exact exposure-symptom wording over broad related contexts."
             ),
             f"Return up to {max_evidence_rows} strongest evidence rows; fewer is preferred over weak matches.",
             "Populate support-level study quality and match metrics strictly in [0,1].",

@@ -433,3 +433,6 @@
 ## Commit 75
 - dedupe candidate identity for evidence retrival on is_combo and secondary_item_id so combo and single candidates are no longer mixed
     - was causing failure in evidence retrival since there could be done for combo but some for singular exposure-symptom
+
+## Commit 76
+- refined LLM prompt for rag.py web search for combo-candidate pairs
