@@ -92,8 +92,14 @@ RAG_SCHEMA = {
                                 "type": "object",
                                 "additionalProperties": False,
                                 "properties": {
-                                    "citation_id": {"type": "string"},
-                                    "snippet": {"type": "string"},
+                                    "citation_id": {"type": ["string", "null"]},
+                                    "snippet": {"type": ["string", "null"]},
+                                    "quote": {"type": ["string", "null"]},
+                                    "excerpt": {"type": ["string", "null"]},
+                                    "text": {
+                                        "type": ["string", "null", "object"],
+                                        "additionalProperties": True,
+                                    },
                                     "chunk_id": {"type": ["string", "null"]},
                                     "study_design": {
                                         "type": ["string", "null"],
@@ -122,10 +128,7 @@ RAG_SCHEMA = {
                                     },
                                     "support_direction_score": {"type": ["number", "null"], "minimum": -1, "maximum": 1},
                                 },
-                                "required": [
-                                    "citation_id",
-                                    "snippet",
-                                ],
+                                "required": [],
                             },
                         },
                     },
@@ -591,6 +594,17 @@ def _extract_json_text_from_responses_payload(payload: dict[str, Any]) -> str | 
             text_value = part.get("text")
             if isinstance(text_value, str) and text_value.strip():
                 return text_value
+            if isinstance(text_value, dict):
+                text_inner = text_value.get("value")
+                if isinstance(text_inner, str) and text_inner.strip():
+                    return text_inner
+            output_text_value = part.get("output_text")
+            if isinstance(output_text_value, str) and output_text_value.strip():
+                return output_text_value
+            if isinstance(output_text_value, dict):
+                text_inner = output_text_value.get("value")
+                if isinstance(text_inner, str) and text_inner.strip():
+                    return text_inner
     return None
 
 
@@ -612,9 +626,6 @@ def _extract_grounded_ids(payload: dict[str, Any]) -> tuple[set[str], set[str]]:
     chunk_ids: set[str] = set()
     _collect_ids(payload.get("output"), key="file_id", out=file_ids)
     _collect_ids(payload.get("output"), key="chunk_id", out=chunk_ids)
-
-    # Some SDK payloads place grounding metadata under annotations with IDs.
-    _collect_ids(payload.get("output"), key="id", out=chunk_ids)
     return file_ids, chunk_ids
 
 
@@ -1136,7 +1147,21 @@ def _llm_retrieve_evidence_rows(
             if not isinstance(support, dict):
                 continue
             citation_id = support.get("citation_id")
+            if not isinstance(citation_id, str) or not citation_id.strip():
+                if len(citation_map) == 1:
+                    citation_id = next(iter(citation_map.keys()))
             snippet = support.get("snippet")
+            if not (isinstance(snippet, str) and snippet.strip()):
+                for alt_key in ("quote", "excerpt", "text"):
+                    alt_value = support.get(alt_key)
+                    if isinstance(alt_value, str) and alt_value.strip():
+                        snippet = alt_value
+                        break
+                    if isinstance(alt_value, dict):
+                        text_value = alt_value.get("value")
+                        if isinstance(text_value, str) and text_value.strip():
+                            snippet = text_value
+                            break
             chunk_id = support.get("chunk_id")
             study_design = support.get("study_design")
             study_quality_score = _bounded_metric(support.get("study_quality_score"))
