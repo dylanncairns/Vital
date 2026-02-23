@@ -439,10 +439,10 @@
 - refined LLM prompt for study relevance criteria
     - high, medium, low with fallback computation based on quality metrics
 
-## Commits 78-79
+## Commits 78-80
 - added support for better debugging of evidence retrival failures in LLM payload
 - refined LLM prompt for rag.py web search 
     - relaxed symptom context match requirements
     - symptom alias matching added
     - relaxed chunk_id requirements as long as rest of ingested evidence is good
-        - was a hard gating prior
+        - was a hard gating prior and so removed to assess behavior

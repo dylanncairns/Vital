@@ -94,7 +94,7 @@ RAG_SCHEMA = {
                                 "properties": {
                                     "citation_id": {"type": "string"},
                                     "snippet": {"type": "string"},
-                                    "chunk_id": {"type": "string"},
+                                    "chunk_id": {"type": ["string", "null"]},
                                     "study_design": {
                                         "type": "string",
                                         "enum": [
@@ -124,7 +124,6 @@ RAG_SCHEMA = {
                                 "required": [
                                     "citation_id",
                                     "snippet",
-                                    "chunk_id",
                                     "study_design",
                                     "study_quality_score",
                                     "population_match",
