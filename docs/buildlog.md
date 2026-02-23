@@ -439,7 +439,7 @@
 - refined LLM prompt for study relevance criteria
     - high, medium, low with fallback computation based on quality metrics
 
-## Commits 78-83
+## Commits 78-85
 - added support for better debugging of evidence retrival failures in LLM payload
 - refined LLM prompt for rag.py web search 
     - relaxed symptom context match requirements
@@ -450,3 +450,4 @@
     - some required metadata was gating overly hard when good evidence still may not have it 
     - reduced strictness of response json text parsing (less strict shape of payload)
     - support row for UI now less strict / gated
+- realigned RAG_SCHEMA with OpenAI structures for JSON mode
