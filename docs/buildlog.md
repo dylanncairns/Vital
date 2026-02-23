@@ -438,3 +438,6 @@
 - refined LLM prompt for rag.py web search for combo-candidate pairs
 - refined LLM prompt for study relevance criteria
     - high, medium, low with fallback computation based on quality metrics
+
+## Commit 78
+- added support for better debugging of evidence retrival failures in LLM payload

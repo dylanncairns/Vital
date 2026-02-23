@@ -245,8 +245,27 @@ def process_background_jobs_batch(payload: ProcessJobsIn):
                     claims_added_total = int(sync_result.get("claims_added", 0) or 0)
                     if isinstance(sync_retry_result, dict):
                         claims_added_total += int(sync_retry_result.get("claims_added", 0) or 0)
+                    initial_rows = int(sync_result.get("retrieval_stage_rows", 0) or 0)
+                    initial_rejected = int(sync_result.get("rows_rejected_quality", 0) or 0)
+                    initial_dupes = int(sync_result.get("duplicate_claim_rows_skipped", 0) or 0)
+                    initial_no_rows = int(sync_result.get("candidates_without_rows", 0) or 0)
+                    retry_rows = 0
+                    retry_rejected = 0
+                    retry_dupes = 0
+                    retry_no_rows = 0
+                    if isinstance(sync_retry_result, dict):
+                        retry_rows = int(sync_retry_result.get("retrieval_stage_rows", 0) or 0)
+                        retry_rejected = int(sync_retry_result.get("rows_rejected_quality", 0) or 0)
+                        retry_dupes = int(sync_retry_result.get("duplicate_claim_rows_skipped", 0) or 0)
+                        retry_no_rows = int(sync_retry_result.get("candidates_without_rows", 0) or 0)
+                    is_combo_job = bool(payload_dict.get("is_combo"))
                     raise RuntimeError(
-                        f"no evidence acquired for candidate after retrieval+discovery (claims_added={claims_added_total})"
+                        "no evidence acquired for candidate after retrieval+discovery "
+                        f"(is_combo={int(is_combo_job)}, claims_added={claims_added_total}, "
+                        f"initial_rows={initial_rows}, initial_rejected={initial_rejected}, "
+                        f"initial_dupes={initial_dupes}, initial_no_rows={initial_no_rows}, "
+                        f"retry_rows={retry_rows}, retry_rejected={retry_rejected}, "
+                        f"retry_dupes={retry_dupes}, retry_no_rows={retry_no_rows})"
                     )
                 evidence_jobs_done += 1
             elif job["job_type"] == JOB_MODEL_RETRAIN:
