@@ -442,3 +442,7 @@
 ## Commits 78-79
 - added support for better debugging of evidence retrival failures in LLM payload
 - refined LLM prompt for rag.py web search 
+    - relaxed symptom context match requirements
+    - symptom alias matching added
+    - relaxed chunk_id requirements as long as rest of ingested evidence is good
+        - was a hard gating prior

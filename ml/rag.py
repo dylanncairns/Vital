@@ -734,6 +734,17 @@ _SYMPTOM_TEXT_TERMS = {
     "sore throat",
 }
 
+_SYMPTOM_MATCH_ALIASES: dict[str, list[str]] = {
+    "stomachache": ["stomach pain", "abdominal pain", "abdominal discomfort", "dyspepsia", "gi upset", "gastrointestinal upset"],
+    "stomach pain": ["stomachache", "abdominal pain", "abdominal discomfort", "dyspepsia"],
+    "brain fog": ["cognitive impairment", "cognitive dysfunction", "mental fog", "difficulty concentrating"],
+    "dizziness": ["lightheadedness", "vertigo"],
+    "anxiety": ["anxious", "anxiety symptoms"],
+    "itch": ["itchy", "pruritus"],
+    "heartburn": ["acid reflux", "reflux", "gerd", "pyrosis"],
+    "palpitations": ["racing heart", "rapid heartbeat", "tachycardia", "heart racing"],
+}
+
 
 def _is_hazard_context_mismatch(*, item_name: str | None, snippet: str, title: str) -> bool:
     item = " ".join((item_name or "").strip().lower().split())
@@ -866,7 +877,16 @@ def _symptom_context_mismatch(
     normalized = " ".join((text or "").strip().lower().split())
     if not symptom or not normalized:
         return False
-    if symptom in normalized:
+    symptom_phrases = [symptom]
+    for alias in _SYMPTOM_MATCH_ALIASES.get(symptom, []):
+        alias_norm = " ".join(alias.strip().lower().split())
+        if alias_norm and alias_norm not in symptom_phrases:
+            symptom_phrases.append(alias_norm)
+    if any(phrase in normalized for phrase in symptom_phrases if phrase):
+        return False
+    # Fallback token match for symptom phrases ("sore throat" -> both tokens present, etc.)
+    symptom_tokens = [t for t in re.findall(r"[a-z0-9]+", " ".join(symptom_phrases)) if len(t) >= 4]
+    if symptom_tokens and any(token in normalized for token in symptom_tokens):
         return False
     # If another known symptom term appears but the target symptom doesn't, treat as mismatch.
     for term in _SYMPTOM_TEXT_TERMS:
@@ -1144,11 +1164,10 @@ def _llm_retrieve_evidence_rows(
                 continue
             if not isinstance(snippet, str) or not snippet.strip():
                 continue
-            if not isinstance(chunk_id, str) or not chunk_id.strip():
-                continue
+            chunk_id_value = chunk_id.strip() if isinstance(chunk_id, str) and chunk_id.strip() else None
             if not isinstance(study_design, str) or not study_design.strip():
                 study_design = "other"
-            if retrieved_chunk_ids and chunk_id not in retrieved_chunk_ids:
+            if chunk_id_value and retrieved_chunk_ids and chunk_id_value not in retrieved_chunk_ids:
                 skipped_by_chunk_filter += 1
                 # Fallback: keep row if snippet exists and citation is otherwise grounded.
                 # Some SDK payloads surface chunk IDs in a different field than our parser.
