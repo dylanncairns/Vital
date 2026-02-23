@@ -106,7 +106,11 @@ RAG_SCHEMA = {
                                     "excerpt": {"type": ["string", "null"]},
                                     "text": {
                                         "type": ["string", "null", "object"],
-                                        "additionalProperties": True,
+                                        "additionalProperties": False,
+                                        "properties": {
+                                            "value": {"type": ["string", "null"]},
+                                        },
+                                        "required": ["value"],
                                     },
                                     "chunk_id": {"type": ["string", "null"]},
                                     "study_design": {
