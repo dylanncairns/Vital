@@ -924,6 +924,7 @@ def _llm_retrieve_evidence_rows(
     http_post_json=None,
     client_override=None,
     vector_store_id_override: str | None = None,
+    relaxed_single: bool = False,
 ) -> list[dict[str, Any]]:
     _ = http_post_json
     client = client_override or _get_openai_client()
@@ -973,6 +974,15 @@ def _llm_retrieve_evidence_rows(
             if is_combo
             else ""
         )
+        + (
+            " This is a single-exposure relaxed retrieval pass. "
+            "If no exact phrase match exists, include supports only when a close clinical/lay equivalent clearly "
+            "refers to the same exposure and target symptom in the same cited study context. "
+            "Use title + snippet + extracted claim/support together as context for one citation. "
+            "Do not broaden to adjacent lifestyle factors, generic risk factors, or vague correlated contexts."
+            if (relaxed_single and not is_combo)
+            else ""
+        )
     )
     question_payload = {
         "symptom_name": symptom_name,
@@ -997,9 +1007,17 @@ def _llm_retrieve_evidence_rows(
                 "For combo candidates, do not require the two exposures to appear in the same sentence if they are "
                 "both clearly present within the same citation context and linked to the target symptom/outcome."
                 if is_combo
-                else "Prefer exact exposure-symptom wording over broad related contexts."
+                else (
+                    "Prefer exact exposure-symptom wording over broad related contexts."
+                    if not relaxed_single
+                    else "On this relaxed single-item pass, exact wording is preferred but clearly equivalent exposure/symptom terminology is acceptable when grounded to the same citation."
+                )
             ),
-            f"Return up to {max_evidence_rows} strongest evidence rows; fewer is preferred over weak matches.",
+            (
+                f"Return up to {max_evidence_rows} strongest evidence rows; fewer is preferred over weak matches."
+                if (is_combo or not relaxed_single)
+                else f"Return up to {max_evidence_rows} strongest evidence rows; on this relaxed pass, moderate relevance rows are acceptable if grounded and conceptually equivalent."
+            ),
             "Populate support-level study quality and match metrics strictly in [0,1].",
             "Populate relevance_label for each support as one of: high, moderate, low.",
             "Populate support_direction_score in [-1,1] for each support.",
@@ -1464,7 +1482,11 @@ def sync_claims_for_candidates(
             ]
             llm_rows: list[dict[str, Any]] = []
             candidate_rows_raw = 0
-            def _call_llm_retriever(*, ingredient_names_arg: list[str]) -> list[dict[str, Any]]:
+            def _call_llm_retriever(
+                *,
+                ingredient_names_arg: list[str],
+                relaxed_single_arg: bool = False,
+            ) -> list[dict[str, Any]]:
                 kwargs = {
                     "symptom_name": symptom_name,
                     "ingredient_names": ingredient_names_arg,
@@ -1473,10 +1495,12 @@ def sync_claims_for_candidates(
                     "routes": sorted(candidate.get("routes", [])),
                     "lag_bucket_counts": candidate.get("lag_bucket_counts"),
                     "max_evidence_rows": max_papers_per_query,
+                    "relaxed_single": relaxed_single_arg,
                 }
                 try:
                     return llm_retriever(**kwargs)
                 except TypeError:
+                    kwargs.pop("relaxed_single", None)
                     kwargs.pop("secondary_item_name", None)
                     return llm_retriever(**kwargs)
 
@@ -1489,10 +1513,12 @@ def sync_claims_for_candidates(
                     "routes": sorted(candidate.get("routes", [])),
                     "lag_bucket_counts": candidate.get("lag_bucket_counts"),
                     "max_evidence_rows": max_papers_per_query,
+                    "relaxed_single": True,
                 }
                 try:
                     return llm_retriever(**kwargs)
                 except TypeError:
+                    kwargs.pop("relaxed_single", None)
                     kwargs.pop("secondary_item_name", None)
                     return llm_retriever(**kwargs)
             if ingredient_ids:
@@ -1523,11 +1549,29 @@ def sync_claims_for_candidates(
                     llm_rows = _call_llm_retriever(ingredient_names_arg=[])
                     candidate_rows_raw += len(llm_rows)
                     retrieval_stage_rows += len(llm_rows)
+                    if not llm_rows and secondary_item_id is None:
+                        retrieval_stage_attempts += 1
+                        relaxed_rows = _call_llm_retriever(
+                            ingredient_names_arg=[],
+                            relaxed_single_arg=True,
+                        )
+                        llm_rows = relaxed_rows
+                        candidate_rows_raw += len(relaxed_rows)
+                        retrieval_stage_rows += len(relaxed_rows)
             else:
                 retrieval_stage_attempts += 1
                 llm_rows = _call_llm_retriever(ingredient_names_arg=ingredient_names)
                 candidate_rows_raw += len(llm_rows)
                 retrieval_stage_rows += len(llm_rows)
+                if not llm_rows and secondary_item_id is None:
+                    retrieval_stage_attempts += 1
+                    relaxed_rows = _call_llm_retriever(
+                        ingredient_names_arg=ingredient_names,
+                        relaxed_single_arg=True,
+                    )
+                    llm_rows = relaxed_rows
+                    candidate_rows_raw += len(relaxed_rows)
+                    retrieval_stage_rows += len(relaxed_rows)
                 # Combo retrieval is intentionally strict and may return no rows.
                 # Fallback to single-item retrieval so per-item claims can still be acquired.
                 if not llm_rows and secondary_item_id is not None:

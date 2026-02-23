@@ -439,5 +439,6 @@
 - refined LLM prompt for study relevance criteria
     - high, medium, low with fallback computation based on quality metrics
 
-## Commit 78
+## Commits 78-79
 - added support for better debugging of evidence retrival failures in LLM payload
+- refined LLM prompt for rag.py web search 
