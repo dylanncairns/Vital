@@ -115,6 +115,10 @@ RAG_SCHEMA = {
                                     "temporality_match": {"type": "number", "minimum": 0, "maximum": 1},
                                     "risk_of_bias": {"type": "number", "minimum": 0, "maximum": 1},
                                     "llm_confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                                    "relevance_label": {
+                                        "type": "string",
+                                        "enum": ["high", "moderate", "low"],
+                                    },
                                     "support_direction_score": {"type": "number", "minimum": -1, "maximum": 1},
                                 },
                                 "required": [
@@ -127,6 +131,7 @@ RAG_SCHEMA = {
                                     "temporality_match",
                                     "risk_of_bias",
                                     "llm_confidence",
+                                    "relevance_label",
                                     "support_direction_score",
                                 ],
                             },
@@ -621,6 +626,25 @@ def _extract_grounded_ids(payload: dict[str, Any]) -> tuple[set[str], set[str]]:
     return file_ids, chunk_ids
 
 
+def _normalize_relevance_label(value: Any) -> float | None:
+    normalized = str(value or "").strip().lower()
+    if not normalized:
+        return None
+    mapping = {
+        "high": 0.85,
+        "moderate": 0.55,
+        "medium": 0.55,
+        "low": 0.20,
+    }
+    if normalized in mapping:
+        return mapping[normalized]
+    try:
+        numeric = float(normalized)
+        return max(0.0, min(1.0, numeric))
+    except (TypeError, ValueError):
+        return None
+
+
 def _bounded_metric(value: Any, *, default: float = 0.5) -> float:
     try:
         parsed = float(value)
@@ -931,7 +955,8 @@ def _llm_retrieve_evidence_rows(
         "DO NOT invent citation_ids, file_ids, chunk_ids, DOI, URLs, titles, or years. "
         "Each evidence.supports entry must reference a citation_id present in citations. "
         "For each support, assign study_design and numeric metrics from the retrieved text only: "
-        "study_quality_score, population_match, temporality_match, risk_of_bias, llm_confidence in [0,1]. "
+        "study_quality_score, population_match, temporality_match, risk_of_bias, llm_confidence in [0,1], "
+        "and relevance_label as high/moderate/low. "
         "Also assign support_direction_score in [-1,1] where -1 is contradictory, 0 is mixed/unclear, "
         "and +1 is strongly supportive for the exact exposure-symptom linkage and temporal pattern. "
         + (
@@ -976,6 +1001,7 @@ def _llm_retrieve_evidence_rows(
             ),
             f"Return up to {max_evidence_rows} strongest evidence rows; fewer is preferred over weak matches.",
             "Populate support-level study quality and match metrics strictly in [0,1].",
+            "Populate relevance_label for each support as one of: high, moderate, low.",
             "Populate support_direction_score in [-1,1] for each support.",
         ],
     }
@@ -1089,6 +1115,8 @@ def _llm_retrieve_evidence_rows(
             temporality_match = _bounded_metric(support.get("temporality_match"))
             risk_of_bias = _bounded_metric(support.get("risk_of_bias"))
             llm_confidence = _bounded_metric(support.get("llm_confidence"))
+            relevance_label = support.get("relevance_label")
+            relevance_value = _normalize_relevance_label(relevance_label)
             try:
                 support_direction_score = float(support.get("support_direction_score"))
             except (TypeError, ValueError):
@@ -1162,6 +1190,8 @@ def _llm_retrieve_evidence_rows(
                     "temporality_match": temporality_match,
                     "risk_of_bias": risk_of_bias,
                     "llm_confidence": llm_confidence,
+                    "relevance": relevance_value,
+                    "relevance_label": str(relevance_label).strip().lower() if relevance_label is not None else None,
                 }
             )
             if len(output) >= max_evidence_rows:
@@ -1306,12 +1336,37 @@ def _claim_row_passes_quality_floor(row: dict[str, Any]) -> bool:
     min_snippet_chars = max(20, int(float(os.getenv("RAG_MIN_ONLINE_ROW_SNIPPET_CHARS", "40"))))
 
     snippet = str(row.get("snippet") or row.get("summary") or "")
-    relevance = max(0.0, min(1.0, float(row.get("relevance") or 0.0)))
     study_quality = _bounded_metric(row.get("study_quality_score"))
     population_match = _bounded_metric(row.get("population_match"))
     temporality_match = _bounded_metric(row.get("temporality_match"))
     risk_of_bias = _bounded_metric(row.get("risk_of_bias"))
     llm_confidence = _bounded_metric(row.get("llm_confidence"))
+    relevance: float
+    raw_relevance = row.get("relevance")
+    try:
+        if raw_relevance is not None:
+            relevance = max(0.0, min(1.0, float(raw_relevance)))
+        else:
+            raise ValueError("missing relevance")
+    except (TypeError, ValueError):
+        label_value = _normalize_relevance_label(row.get("relevance_label"))
+        if label_value is not None:
+            relevance = label_value
+        else:
+            # Robust fallback for older/malformed rows: derive a conservative relevance
+            # estimate from other grounded support metrics instead of defaulting to zero.
+            relevance = max(
+                0.0,
+                min(
+                    1.0,
+                    (
+                        0.45 * llm_confidence
+                        + 0.20 * population_match
+                        + 0.20 * temporality_match
+                        + 0.15 * study_quality
+                    ),
+                ),
+            )
     direction = max(-1.0, min(1.0, float(row.get("evidence_polarity_and_strength") or 0.0)))
 
     composite = (
