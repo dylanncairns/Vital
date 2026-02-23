@@ -70,13 +70,13 @@ RAG_SCHEMA = {
                     "properties": {
                         "citation_id": {"type": "string"},
                         "title": {"type": "string"},
-                        "authors": {"type": "array", "items": {"type": "string"}},
-                        "year": {"type": "integer"},
+                        "authors": {"type": ["array", "null"], "items": {"type": "string"}},
+                        "year": {"type": ["integer", "null"]},
                         "doi": {"type": ["string", "null"]},
                         "url": {"type": ["string", "null"]},
-                        "file_id": {"type": "string"},
+                        "file_id": {"type": ["string", "null"]},
                     },
-                    "required": ["citation_id", "title", "authors", "year", "doi", "url", "file_id"],
+                    "required": ["citation_id", "title"],
                 },
             },
             "evidence": {
@@ -96,7 +96,7 @@ RAG_SCHEMA = {
                                     "snippet": {"type": "string"},
                                     "chunk_id": {"type": ["string", "null"]},
                                     "study_design": {
-                                        "type": "string",
+                                        "type": ["string", "null"],
                                         "enum": [
                                             "rct",
                                             "cohort",
@@ -108,30 +108,23 @@ RAG_SCHEMA = {
                                             "animal",
                                             "in_vitro",
                                             "other",
+                                            None,
                                         ],
                                     },
-                                    "study_quality_score": {"type": "number", "minimum": 0, "maximum": 1},
-                                    "population_match": {"type": "number", "minimum": 0, "maximum": 1},
-                                    "temporality_match": {"type": "number", "minimum": 0, "maximum": 1},
-                                    "risk_of_bias": {"type": "number", "minimum": 0, "maximum": 1},
-                                    "llm_confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                                    "study_quality_score": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+                                    "population_match": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+                                    "temporality_match": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+                                    "risk_of_bias": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+                                    "llm_confidence": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
                                     "relevance_label": {
-                                        "type": "string",
-                                        "enum": ["high", "moderate", "low"],
+                                        "type": ["string", "null"],
+                                        "enum": ["high", "moderate", "low", None],
                                     },
-                                    "support_direction_score": {"type": "number", "minimum": -1, "maximum": 1},
+                                    "support_direction_score": {"type": ["number", "null"], "minimum": -1, "maximum": 1},
                                 },
                                 "required": [
                                     "citation_id",
                                     "snippet",
-                                    "study_design",
-                                    "study_quality_score",
-                                    "population_match",
-                                    "temporality_match",
-                                    "risk_of_bias",
-                                    "llm_confidence",
-                                    "relevance_label",
-                                    "support_direction_score",
                                 ],
                             },
                         },
@@ -1121,9 +1114,8 @@ def _llm_retrieve_evidence_rows(
             continue
         if not isinstance(title, str) or not title.strip():
             continue
-        if not isinstance(file_id, str) or not file_id.strip():
-            continue
-        if retrieved_file_ids and file_id not in retrieved_file_ids:
+        file_id_value = file_id.strip() if isinstance(file_id, str) and file_id.strip() else None
+        if file_id_value is not None and retrieved_file_ids and file_id_value not in retrieved_file_ids:
             continue
         normalized_id = citation_id.strip()
         citation_map[normalized_id] = raw

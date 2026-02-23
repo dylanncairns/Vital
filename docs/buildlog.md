@@ -446,3 +446,5 @@
     - symptom alias matching added
     - relaxed chunk_id requirements as long as rest of ingested evidence is good
         - was a hard gating prior and so removed to assess behavior
+- refined response parser gating for paper ingestion
+    - some required metadata was gating overly hard when good evidence still may not have it 
