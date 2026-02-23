@@ -28,6 +28,7 @@ export default function TabLayout() {
       }}
     >
       <Tabs.Screen name="index" options={{ href: null }} />
+      <Tabs.Screen name="yourdata" options={{ title: "Your Data" }} />
       <Tabs.Screen name="timeline" options={{ title: "Timeline" }} />
       <Tabs.Screen name="insights" options={{ title: "Insights" }} />
       <Tabs.Screen name="logevent" options={{ title: "Log Event" }} />

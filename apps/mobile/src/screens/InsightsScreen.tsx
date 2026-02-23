@@ -98,17 +98,29 @@ export default function InsightsScreen() {
 
   return (
     <SafeAreaView style={styles.safe}>
+      <View style={styles.header}>
+        <Text style={styles.headerTitle}>Insights</Text>
+      </View>
       <FlatList
         data={rows}
         keyExtractor={(item) => `${item.id}`}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={load} />}
-        contentContainerStyle={[styles.container, { flexGrow: 1 }]}
-        ListHeaderComponent={
-          <View style={styles.header}>
-            <Text style={styles.headerTitle}>Insights</Text>
-          </View>
-        }
+        contentContainerStyle={[styles.container, { flexGrow: 1, paddingTop: 6 }]}
         ListEmptyComponent={<Text style={styles.emptyText}>Add more events to generate insights.</Text>}
+        ListFooterComponent={
+          <Text
+            style={{
+              marginTop: 10,
+              marginBottom: 0,
+              textAlign: "center",
+              fontSize: 12,
+              fontFamily: "Exo2-Regular",
+              color: "#8C92A6",
+            }}
+          >
+            Vital does not intend to and does not have liscencing to give medical advice.
+          </Text>
+        }
         renderItem={({ item }) => {
           const isVerified = Boolean(item.user_verified);
           const isRejected = Boolean(item.user_rejected);

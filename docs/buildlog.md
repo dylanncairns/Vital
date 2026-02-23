@@ -451,3 +451,16 @@
     - reduced strictness of response json text parsing (less strict shape of payload)
     - support row for UI now less strict / gated
 - realigned RAG_SCHEMA with OpenAI structures for JSON mode
+    - had major impact when misaligned, as evidence_acquire_candidate jobs were silently failing and required so much debugging just to get to the bottom of actual issue
+
+## Commit 87
+- added "your data" nav tab
+    - displays user's most reported exposure in insights + related symptom insights
+    - displays user's most reported symptom in insights + all related exposure insights
+    - clicking details pulls up full "see insight" on the other side of the screen
+- update timeline UI to seperate montonous symptoms and exposure UI
+    - shift exposures to the side
+- update header to not scroll
+- fixed accounts view from being so obnoxiously horizontal
+- reduced padding on metadata UI for insights popup
+- added medical disclaimer to pages where insights are shown

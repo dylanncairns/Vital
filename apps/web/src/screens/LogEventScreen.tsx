@@ -194,10 +194,10 @@ export default function LogEventScreen() {
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: "#F7F8FB" }}>
-      <ScrollView contentContainerStyle={{ padding: 16, gap: 14 }}>
-        <View style={{ paddingTop: 14, paddingBottom: 10, alignItems: "center", justifyContent: "center", minHeight: 44 }}>
-          <Text style={{ fontSize: 28, fontFamily: FONT_BOLD, color: "#101426", textAlign: "center" }}>Log Event</Text>
-        </View>
+      <View style={{ paddingTop: 14, paddingBottom: 10, alignItems: "center", justifyContent: "center", minHeight: 44 }}>
+        <Text style={{ fontSize: 28, fontFamily: FONT_BOLD, color: "#101426", textAlign: "center" }}>Log Event</Text>
+      </View>
+      <ScrollView contentContainerStyle={{ padding: 16, paddingTop: 6, gap: 14 }}>
 
         <View style={{ padding: 12, borderWidth: 1, borderColor: "#E1E5EE", borderRadius: 10, gap: 10 }}>
           <Text style={{ fontSize: 16, fontFamily: FONT_SEMIBOLD }}>Log an Exposure</Text>

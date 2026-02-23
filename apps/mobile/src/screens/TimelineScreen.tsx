@@ -301,18 +301,16 @@ export default function TimelineScreen() {
 
   return (
     <SafeAreaView style={styles.safe}>
+      <View style={styles.header}>
+        <Text style={styles.headerTitle}>{timelineHeaderTitle}</Text>
+      </View>
       <FlatList
         data={rows}
         keyExtractor={(item) => item.key}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => load(true)} />}
-        contentContainerStyle={[styles.container, { flexGrow: 1 }]}
+        contentContainerStyle={[styles.container, { flexGrow: 1, paddingTop: 6 }]}
         bounces={true}
         alwaysBounceVertical={true}
-        ListHeaderComponent={
-          <View style={styles.header}>
-            <Text style={styles.headerTitle}>{timelineHeaderTitle}</Text>
-          </View>
-        }
         ListEmptyComponent={<Text style={styles.emptyText}>Add events to build your timeline.</Text>}
         renderItem={({ item }) => {
           if (item.type === "date") {
@@ -345,8 +343,15 @@ export default function TimelineScreen() {
                   <View style={styles.branch} />
                 </View>
               </View>
+              {isExposure ? <View style={styles.exposureConnector} /> : null}
 
-              <View style={styles.card}>
+              <View
+                style={[
+                  styles.card,
+                  styles.cardCompact,
+                  isExposure ? styles.cardExposureAligned : styles.cardSymptomAligned,
+                ]}
+              >
                 <Text style={styles.timeText}>{time}</Text>
                 <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
                   <Text style={[styles.titleText, { flex: 1 }]}>
@@ -573,7 +578,7 @@ export default function TimelineScreen() {
               {selectedInsights.map((selectedInsight) => (
                 <View
                   key={`timeline-insight-${selectedInsight.id}`}
-                  style={{ borderWidth: 1, borderColor: "#E6E9F2", borderRadius: 12, padding: 10, marginBottom: 8, gap: 4 }}
+                  style={{ borderWidth: 1, borderColor: "#E6E9F2", borderRadius: 12, padding: 10, marginBottom: 8, gap: 1 }}
                 >
                   {(() => {
                     const isVerified = Boolean(selectedInsight.user_verified);
@@ -785,7 +790,7 @@ export default function TimelineScreen() {
                   <Text style={{ fontSize: 12, fontFamily: "Exo2-Regular", color: "#69708A" }}>
                     Evidence strength: {typeof selectedInsight.evidence_strength_score === "number" ? selectedInsight.evidence_strength_score.toFixed(2) : "-"}
                   </Text>
-                  <Text style={{ marginTop: 2, fontSize: 13, fontFamily: "Exo2-Bold", color: "#232A44" }}>
+                  <Text style={{ marginTop: 3, fontSize: 13, fontFamily: "Exo2-Bold", color: "#232A44" }}>
                     Citations ({selectedInsight.citations?.length ?? 0})
                   </Text>
                   {(selectedInsight.citations ?? []).slice(0, 3).map((citation, index) => (

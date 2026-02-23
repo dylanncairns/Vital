@@ -92,13 +92,29 @@ export const styles = StyleSheet.create({
     height: 2,
     backgroundColor: "#E2E7F1",
   },
-  card: {
+  exposureConnector: {
     flex: 1,
+    height: 2,
+    backgroundColor: "#E2E7F1",
+    marginTop: 24,
+    marginRight: 0,
+  },
+  card: {
     backgroundColor: "#FFFFFF",
     borderRadius: 16,
     padding: 16,
     borderWidth: 1,
     borderColor: "#E2E7F1",
+    maxWidth: "100%",
+  },
+  cardCompact: {
+    width: "75%",
+  },
+  cardSymptomAligned: {
+    marginRight: "auto",
+  },
+  cardExposureAligned: {
+    marginLeft: "auto",
   },
   timeText: {
     color: TEXT_SOFT_DARK,

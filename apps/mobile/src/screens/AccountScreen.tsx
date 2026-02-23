@@ -103,8 +103,8 @@ export default function AccountScreen() {
         <View style={{ paddingTop: 14, paddingBottom: 10, alignItems: "center", justifyContent: "center", minHeight: 44 }}>
           <Text style={{ fontSize: 28, fontFamily: "Exo2-Bold", color: "#101426", textAlign: "center" }}>Account</Text>
         </View>
-        <Text style={{ color: "#5C6784" }}>Username: {username}</Text>
-        <Text style={{ color: "#5C6784" }}>Preferred first name: {user?.name ?? "-"}</Text>
+        <Text style={{ color: "#5C6784", textAlign: "center" }}>Username: {username}</Text>
+        <Text style={{ color: "#5C6784", textAlign: "center" }}>Preferred first name: {user?.name ?? "-"}</Text>
 
         {!editingName ? (
           <Pressable
@@ -118,7 +118,9 @@ export default function AccountScreen() {
               backgroundColor: "#2E5BCE",
               borderRadius: 10,
               paddingVertical: 12,
+              paddingHorizontal: 18,
               alignItems: "center",
+              alignSelf: "center",
             }}
           >
             <Text style={{ color: "#FFF", fontFamily: FONT_SEMIBOLD }}>Change Preferred First Name</Text>
@@ -131,15 +133,16 @@ export default function AccountScreen() {
               placeholder="Preferred first name"
               style={{ borderWidth: 1, borderColor: "#D6DCEB", borderRadius: 10, padding: 12, backgroundColor: "#FFF" }}
             />
-            <View style={{ flexDirection: "row", gap: 8 }}>
+            <View style={{ flexDirection: "row", gap: 8, alignSelf: "center" }}>
               <Pressable
                 onPress={saveName}
                 disabled={busy}
                 style={{
-                  flex: 1,
                   backgroundColor: "#2E5BCE",
                   borderRadius: 10,
                   paddingVertical: 12,
+                  paddingHorizontal: 16,
+                  minWidth: 140,
                   alignItems: "center",
                   opacity: busy ? 0.7 : 1,
                 }}
@@ -152,11 +155,12 @@ export default function AccountScreen() {
                   setName(user?.name ?? "");
                 }}
                 style={{
-                  flex: 1,
                   borderWidth: 1,
                   borderColor: "#D0D5DD",
                   borderRadius: 10,
                   paddingVertical: 12,
+                  paddingHorizontal: 16,
+                  minWidth: 110,
                   alignItems: "center",
                   backgroundColor: "#FFFFFF",
                 }}
@@ -174,8 +178,10 @@ export default function AccountScreen() {
             borderColor: "#D0D5DD",
             borderRadius: 10,
             paddingVertical: 12,
+            paddingHorizontal: 18,
             alignItems: "center",
             backgroundColor: "#FFFFFF",
+            alignSelf: "center",
           }}
         >
           <Text style={{ color: "#1D2433", fontFamily: FONT_SEMIBOLD }}>Logout</Text>
@@ -209,6 +215,18 @@ export default function AccountScreen() {
           {" or "}
           <Text style={{ color: "#C53F3F", fontFamily: FONT_SEMIBOLD }}>rejected</Text>
           {` ${feedbackCount} insights - thank you for empowering our mission to surface accurate health insights!`}
+        </Text>
+        <Text
+          style={{
+            marginTop: 10,
+            marginBottom: 0,
+            textAlign: "center",
+            fontSize: 12,
+            fontFamily: "Exo2-Regular",
+            color: "#8C92A6",
+          }}
+        >
+          Vital does not intend to and does not have liscencing to give medical advice.
         </Text>
       </View>
     </SafeAreaView>

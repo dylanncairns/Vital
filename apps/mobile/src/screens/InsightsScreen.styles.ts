@@ -30,7 +30,7 @@ export const styles = StyleSheet.create({
     padding: 14,
     borderWidth: 1,
     borderColor: "#E6E9F2",
-    gap: 6,
+    gap: 2,
   },
   title: {
     fontSize: 16,
@@ -58,7 +58,7 @@ export const styles = StyleSheet.create({
     fontFamily: "Exo2-SemiBold",
   },
   citationsHeader: {
-    marginTop: 6,
+    marginTop: 8,
     fontSize: 13,
     fontFamily: "Exo2-Bold",
     color: "#232A44",
