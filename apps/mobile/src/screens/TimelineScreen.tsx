@@ -152,6 +152,12 @@ export default function TimelineScreen() {
       summary: string | null | undefined,
       opts?: { sourceLabel?: string; citationTitle?: string; abstractSnippet?: string | null }
     ): { summary: string; onset: string | null } {
+      const formatEmbeddedSnippet = (text: string): string => {
+        const normalized = text.replace(/\s+/g, " ").trim();
+        const truncated = normalized.length > 220 ? `${normalized.slice(0, 217).trimEnd()}...` : normalized;
+        const noTrailingPunct = truncated.replace(/[.!?]+\s*$/, "");
+        return noTrailingPunct.replace(/^[A-Z]/, (ch) => ch.toLowerCase());
+      };
       let raw = (summary ?? "No summary").trim();
       raw = raw
         .replace(/^\s*\d+\s+claim(?:s|\(s\))?\s+retrieved\s*[:;.\-]?\s*/i, "")
@@ -161,14 +167,14 @@ export default function TimelineScreen() {
       const match = raw.match(/Dominant lag window:\s*([A-Za-z0-9_]+)\.?$/);
       const sourcePart = opts?.sourceLabel ? `from ${opts.sourceLabel} ` : "";
       const titlePart = opts?.citationTitle ? `(${opts.citationTitle}) ` : "";
-      const snippetRaw = (opts?.abstractSnippet ?? "").replace(/\s+/g, " ").trim();
-      const snippet = snippetRaw.length > 220 ? `${snippetRaw.slice(0, 217).trimEnd()}...` : snippetRaw;
+      const snippet = formatEmbeddedSnippet(opts?.abstractSnippet ?? "");
       const snippetPart = snippet ? `${snippet} ` : "";
       const intro = snippet
         ? `Supportive evidence states that ${snippetPart}`
         : `Supportive evidence ${sourcePart}${titlePart}indicates that `;
       if (!match) {
         raw = raw.replace(/^overall evidence is supportive\s*(that)?\s*/i, intro);
+        raw = raw.replace(/([.!?])\s+[.!?]+$/g, "$1");
         return { summary: raw, onset: null };
       }
       const bucket = match[1];
@@ -178,7 +184,7 @@ export default function TimelineScreen() {
         /^overall evidence is supportive\s*(that)?\s*/i,
         intro
       );
-      return { summary: rewritten, onset: onsetText };
+      return { summary: rewritten.replace(/([.!?])\s+[.!?]+$/g, "$1"), onset: onsetText };
     }
 
     function citationSourceLabel(citation: { source?: string | null; url?: string | null }): string {

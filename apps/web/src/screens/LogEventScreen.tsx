@@ -250,10 +250,22 @@ export default function LogEventScreen() {
             <Text style={{ color: "#5C6784", marginTop: 2 }}>{selectedRepeatLabel}</Text>
           </Pressable>
 
-          <Button
-            title={repeatDays === 0 ? "Log One-Time Exposure" : "Save Recurring Exposure"}
-            onPress={submitExposurePlan}
-          />
+          <View
+            style={{
+              borderRadius: 8,
+              shadowColor: "#007AFF",
+              shadowOpacity: 0.12,
+              shadowRadius: 6,
+              shadowOffset: { width: 0, height: 2 },
+              elevation: 2,
+            }}
+          >
+            <Button
+              title={repeatDays === 0 ? "Log One-Time Exposure" : "Save Recurring Exposure"}
+              onPress={submitExposurePlan}
+              color="#007AFF"
+            />
+          </View>
           {status ? <Text style={{ color: "#0A7A4F" }}>{status}</Text> : null}
         </View>
 
@@ -274,7 +286,18 @@ export default function LogEventScreen() {
             multiline
           />
           <View style={{ marginTop: 10 }}>
-            <Button title={textSubmitting ? "Logging..." : "Log Text"} onPress={submitText} disabled={textSubmitting} />
+            <View
+              style={{
+                borderRadius: 8,
+                shadowColor: "#007AFF",
+                shadowOpacity: 0.12,
+                shadowRadius: 6,
+                shadowOffset: { width: 0, height: 2 },
+                elevation: 2,
+              }}
+            >
+              <Button title={textSubmitting ? "Logging..." : "Log Text"} onPress={submitText} disabled={textSubmitting} color="#007AFF" />
+            </View>
           </View>
           {textStatus ? <Text style={{ marginTop: 8, color: "#0A7A4F" }}>{textStatus}</Text> : null}
         </View>

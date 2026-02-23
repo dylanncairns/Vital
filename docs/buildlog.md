@@ -453,7 +453,7 @@
 - realigned RAG_SCHEMA with OpenAI structures for JSON mode
     - had major impact when misaligned, as evidence_acquire_candidate jobs were silently failing and required so much debugging just to get to the bottom of actual issue
 
-## Commit 87
+## Commits 87-88
 - added "your data" nav tab
     - displays user's most reported exposure in insights + related symptom insights
     - displays user's most reported symptom in insights + all related exposure insights
@@ -464,3 +464,4 @@
 - fixed accounts view from being so obnoxiously horizontal
 - reduced padding on metadata UI for insights popup
 - added medical disclaimer to pages where insights are shown
+- changed some coloring, padding, screen layout

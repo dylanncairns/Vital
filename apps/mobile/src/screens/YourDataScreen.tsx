@@ -278,13 +278,15 @@ export default function YourDataScreen() {
                 {formatConfidence(exposureSummary.avgConfidence)} for insights involving{" "}
                 {exposureSummary.name}.
               </Text>
-              <InsightAccordionList
-                rows={exposureSummary.insights}
-                selectedInsightId={selectedExposureInsightId}
-                onToggle={(id) =>
-                  setSelectedExposureInsightId((prev) => (prev === id ? null : id))
-                }
-              />
+              <View style={localStyles.insightListSpacer}>
+                <InsightAccordionList
+                  rows={exposureSummary.insights}
+                  selectedInsightId={selectedExposureInsightId}
+                  onToggle={(id) =>
+                    setSelectedExposureInsightId((prev) => (prev === id ? null : id))
+                  }
+                />
+              </View>
             </>
           ) : (
             <Text style={sharedStyles.emptyText}>No surfaced exposure insights yet.</Text>
@@ -304,13 +306,15 @@ export default function YourDataScreen() {
                 {formatConfidence(symptomSummary.avgConfidence)} for insights involving{" "}
                 {symptomSummary.name}.
               </Text>
-              <InsightAccordionList
-                rows={symptomSummary.insights}
-                selectedInsightId={selectedSymptomInsightId}
-                onToggle={(id) =>
-                  setSelectedSymptomInsightId((prev) => (prev === id ? null : id))
-                }
-              />
+              <View style={localStyles.insightListSpacer}>
+                <InsightAccordionList
+                  rows={symptomSummary.insights}
+                  selectedInsightId={selectedSymptomInsightId}
+                  onToggle={(id) =>
+                    setSelectedSymptomInsightId((prev) => (prev === id ? null : id))
+                  }
+                />
+              </View>
             </>
           ) : (
             <Text style={sharedStyles.emptyText}>Log more symptom events to populate this section.</Text>
@@ -375,6 +379,9 @@ const localStyles = StyleSheet.create({
   panelColumn: {
     width: "38%",
     minWidth: 0,
+  },
+  insightListSpacer: {
+    marginTop: 10,
   },
   detailPanel: {
     width: "100%",
