@@ -325,6 +325,7 @@ def _apply_migrations(conn: Connection) -> None:
         _migration_014_claims_polarity_float,
         _migration_015_claims_evidence_metadata_columns,
         _migration_016_exposure_expansion_uniqueness,
+        _migration_017_insights_uniqueness,
     ]
     for migration in migrations:
         migration(conn)
@@ -647,6 +648,92 @@ def _migration_016_exposure_expansion_uniqueness(conn: Connection) -> None:
         """
         CREATE UNIQUE INDEX IF NOT EXISTS idx_exposure_expansions_event_ingredient_unique
         ON exposure_expansions(exposure_event_id, ingredient_id)
+        """
+    )
+
+
+def _migration_017_insights_uniqueness(conn: Connection) -> None:
+    # Keep the newest card per identity so unique indexes can be created safely.
+    conn.execute(
+        """
+        WITH ranked AS (
+            SELECT
+                id,
+                ROW_NUMBER() OVER (
+                    PARTITION BY user_id, item_id, symptom_id
+                    ORDER BY COALESCE(final_score, -1e9) DESC, COALESCE(created_at, '') DESC, id DESC
+                ) AS rn
+            FROM insights
+            WHERE COALESCE(is_combo, 0) = 0
+              AND source_ingredient_id IS NULL
+        )
+        DELETE FROM insights i
+        USING ranked r
+        WHERE i.id = r.id
+          AND r.rn > 1
+        """
+    )
+    conn.execute(
+        """
+        WITH ranked AS (
+            SELECT
+                id,
+                ROW_NUMBER() OVER (
+                    PARTITION BY user_id, item_id, source_ingredient_id, symptom_id
+                    ORDER BY COALESCE(final_score, -1e9) DESC, COALESCE(created_at, '') DESC, id DESC
+                ) AS rn
+            FROM insights
+            WHERE COALESCE(is_combo, 0) = 0
+              AND source_ingredient_id IS NOT NULL
+        )
+        DELETE FROM insights i
+        USING ranked r
+        WHERE i.id = r.id
+          AND r.rn > 1
+        """
+    )
+    conn.execute(
+        """
+        WITH ranked AS (
+            SELECT
+                id,
+                ROW_NUMBER() OVER (
+                    PARTITION BY user_id, combo_key, symptom_id
+                    ORDER BY COALESCE(final_score, -1e9) DESC, COALESCE(created_at, '') DESC, id DESC
+                ) AS rn
+            FROM insights
+            WHERE COALESCE(is_combo, 0) = 1
+              AND combo_key IS NOT NULL
+        )
+        DELETE FROM insights i
+        USING ranked r
+        WHERE i.id = r.id
+          AND r.rn > 1
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_insights_unique_item_symptom
+        ON insights(user_id, item_id, symptom_id)
+        WHERE COALESCE(is_combo, 0) = 0
+          AND source_ingredient_id IS NULL
+        """
+    )
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_insights_unique_item_ingredient_symptom
+        ON insights(user_id, item_id, source_ingredient_id, symptom_id)
+        WHERE COALESCE(is_combo, 0) = 0
+          AND source_ingredient_id IS NOT NULL
+        """
+    )
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_insights_unique_combo_symptom
+        ON insights(user_id, combo_key, symptom_id)
+        WHERE COALESCE(is_combo, 0) = 1
+          AND combo_key IS NOT NULL
         """
     )
 

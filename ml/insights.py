@@ -1213,6 +1213,21 @@ def recompute_insights(
                     model_probability, penalty_score, display_decision_reason, citations_json, created_at
                 )
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (user_id, item_id, symptom_id)
+                WHERE COALESCE(is_combo, 0) = 0 AND source_ingredient_id IS NULL
+                DO UPDATE SET
+                    model_score = EXCLUDED.model_score,
+                    evidence_score = EXCLUDED.evidence_score,
+                    final_score = EXCLUDED.final_score,
+                    evidence_summary = EXCLUDED.evidence_summary,
+                    evidence_strength_score = EXCLUDED.evidence_strength_score,
+                    evidence_quality_score = EXCLUDED.evidence_quality_score,
+                    model_probability = EXCLUDED.model_probability,
+                    penalty_score = EXCLUDED.penalty_score,
+                    display_decision_reason = EXCLUDED.display_decision_reason,
+                    citations_json = EXCLUDED.citations_json,
+                    created_at = EXCLUDED.created_at
+                WHERE COALESCE(EXCLUDED.final_score, -1e9) >= COALESCE(insights.final_score, -1e9)
                 RETURNING id
                 """,
                 (
@@ -1233,7 +1248,24 @@ def recompute_insights(
                     now_iso,
                 ),
             )
-            insight_id = int(insight_cursor.fetchone()["id"])
+            insight_row = insight_cursor.fetchone()
+            if insight_row is None:
+                insight_row = conn.execute(
+                    """
+                    SELECT id
+                    FROM insights
+                    WHERE user_id = %s
+                      AND item_id = %s
+                      AND symptom_id = %s
+                      AND COALESCE(is_combo, 0) = 0
+                      AND source_ingredient_id IS NULL
+                    LIMIT 1
+                    """,
+                    (candidate.user_id, candidate.item_id, candidate.symptom_id),
+                ).fetchone()
+            if insight_row is None:
+                raise RuntimeError("Failed to persist or locate item-level insight row")
+            insight_id = int(insight_row["id"])
             event_link_rows: list[tuple[int, int, str, int, str]] = []
             for exposure_event_id in sorted(candidate.exposure_event_ids):
                 event_link_rows.append((candidate.user_id, insight_id, "exposure", int(exposure_event_id), now_iso))
@@ -1404,6 +1436,21 @@ def recompute_insights(
                         model_probability, penalty_score, display_decision_reason, citations_json, created_at
                     )
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (user_id, item_id, source_ingredient_id, symptom_id)
+                    WHERE COALESCE(is_combo, 0) = 0 AND source_ingredient_id IS NOT NULL
+                    DO UPDATE SET
+                        model_score = EXCLUDED.model_score,
+                        evidence_score = EXCLUDED.evidence_score,
+                        final_score = EXCLUDED.final_score,
+                        evidence_summary = EXCLUDED.evidence_summary,
+                        evidence_strength_score = EXCLUDED.evidence_strength_score,
+                        evidence_quality_score = EXCLUDED.evidence_quality_score,
+                        model_probability = EXCLUDED.model_probability,
+                        penalty_score = EXCLUDED.penalty_score,
+                        display_decision_reason = EXCLUDED.display_decision_reason,
+                        citations_json = EXCLUDED.citations_json,
+                        created_at = EXCLUDED.created_at
+                    WHERE COALESCE(EXCLUDED.final_score, -1e9) >= COALESCE(insights.final_score, -1e9)
                     RETURNING id
                     """,
                     (
@@ -1424,7 +1471,24 @@ def recompute_insights(
                         now_iso,
                     ),
                 )
-                ingredient_insight_id = int(ingredient_cursor.fetchone()["id"])
+                ingredient_row = ingredient_cursor.fetchone()
+                if ingredient_row is None:
+                    ingredient_row = conn.execute(
+                        """
+                        SELECT id
+                        FROM insights
+                        WHERE user_id = %s
+                          AND item_id = %s
+                          AND source_ingredient_id = %s
+                          AND symptom_id = %s
+                          AND COALESCE(is_combo, 0) = 0
+                        LIMIT 1
+                        """,
+                        (candidate.user_id, candidate.item_id, int(ingredient_id), candidate.symptom_id),
+                    ).fetchone()
+                if ingredient_row is None:
+                    raise RuntimeError("Failed to persist or locate ingredient-level insight row")
+                ingredient_insight_id = int(ingredient_row["id"])
                 ingredient_event_links: list[tuple[int, int, str, int, str]] = []
                 for exposure_event_id in sorted(candidate.exposure_event_ids):
                     if int(ingredient_id) not in exposure_ingredients.get(exposure_event_id, set()):
@@ -1756,6 +1820,26 @@ def recompute_insights(
                     model_probability, penalty_score, display_decision_reason, citations_json, created_at
                 )
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (user_id, combo_key, symptom_id)
+                WHERE COALESCE(is_combo, 0) = 1 AND combo_key IS NOT NULL
+                DO UPDATE SET
+                    item_id = EXCLUDED.item_id,
+                    secondary_item_id = EXCLUDED.secondary_item_id,
+                    is_combo = EXCLUDED.is_combo,
+                    combo_item_ids_json = EXCLUDED.combo_item_ids_json,
+                    source_ingredient_id = EXCLUDED.source_ingredient_id,
+                    model_score = EXCLUDED.model_score,
+                    evidence_score = EXCLUDED.evidence_score,
+                    final_score = EXCLUDED.final_score,
+                    evidence_summary = EXCLUDED.evidence_summary,
+                    evidence_strength_score = EXCLUDED.evidence_strength_score,
+                    evidence_quality_score = EXCLUDED.evidence_quality_score,
+                    model_probability = EXCLUDED.model_probability,
+                    penalty_score = EXCLUDED.penalty_score,
+                    display_decision_reason = EXCLUDED.display_decision_reason,
+                    citations_json = EXCLUDED.citations_json,
+                    created_at = EXCLUDED.created_at
+                WHERE COALESCE(EXCLUDED.final_score, -1e9) >= COALESCE(insights.final_score, -1e9)
                 RETURNING id
                 """,
                 (
@@ -1780,7 +1864,23 @@ def recompute_insights(
                     now_iso,
                 ),
             )
-            combo_insight_id = int(insight_cursor.fetchone()["id"])
+            combo_row = insight_cursor.fetchone()
+            if combo_row is None:
+                combo_row = conn.execute(
+                    """
+                    SELECT id
+                    FROM insights
+                    WHERE user_id = %s
+                      AND combo_key = %s
+                      AND symptom_id = %s
+                      AND COALESCE(is_combo, 0) = 1
+                    LIMIT 1
+                    """,
+                    (combo.user_id, combo_key, combo.symptom_id),
+                ).fetchone()
+            if combo_row is None:
+                raise RuntimeError("Failed to persist or locate combo insight row")
+            combo_insight_id = int(combo_row["id"])
             combo_event_links: list[tuple[int, int, str, int, str]] = []
             for exposure_event_id in sorted(combo.exposure_event_ids):
                 combo_event_links.append((combo.user_id, combo_insight_id, "exposure", int(exposure_event_id), now_iso))

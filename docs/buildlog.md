@@ -465,3 +465,12 @@
 - reduced padding on metadata UI for insights popup
 - added medical disclaimer to pages where insights are shown
 - changed some coloring, padding, screen layout
+
+## Commit 89
+- fixed duplicate insights
+    - list_insights is returning every row written into insights table without demultiplying, meaning that insights is recieving duplicate rows from
+    - recompute_insights deletes rows for the specific user and their insights, and then inserts whatever recomputation produces
+        - no on conflict handling and no unique on insights table
+        - occurs due to background jobs sometimes overlapping and thus producing identical insights for a candidate upon insert, and not as easily patchable at the worker level
+        - best idea is to add unique key to insights table (partially since some fields should be identical) and update on conflict
+        - ordered by final score before collapsing duplicates
