@@ -342,7 +342,7 @@ export async function patchRecurringExposure(
 }
 
 export async function deleteRecurringExposure(ruleId: number, userId: number): Promise<{status: string; rule_id: number}> {
-  const res = await fetch(`${BASE_URL}/recurring_exposures/${ruleId}?user_id=${userId}`, {
+  const res = await fetchWithTimeout(`${BASE_URL}/recurring_exposures/${ruleId}?user_id=${userId}`, {
     method: "DELETE",
     headers: authHeaders(),
   });

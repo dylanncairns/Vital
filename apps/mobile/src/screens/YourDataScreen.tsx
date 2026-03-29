@@ -322,7 +322,7 @@ export default function YourDataScreen() {
         </View>
 
         <Text style={localStyles.disclaimerText}>
-          Vital does not intend to and does not have liscencing to give medical advice.
+          Vital does not intend to and does not have licensing to give medical advice.
         </Text>
       </ScrollView>
     </SafeAreaView>

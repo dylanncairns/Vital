@@ -225,13 +225,13 @@ def list_pending_jobs(*, limit: int = 20) -> list[dict[str, Any]]:
         job_ids = [int(row["id"]) for row in selected_rows]
         now_iso = _now_iso()
         with conn.cursor() as cursor:
-            cursor.executemany(
+            cursor.execute(
                 """
                 UPDATE background_jobs
                 SET status = 'running', updated_at = %s
-                WHERE id = %s
+                WHERE id = ANY(%s)
                 """,
-                [(now_iso, job_id) for job_id in job_ids],
+                (now_iso, job_ids),
             )
         conn.commit()
 

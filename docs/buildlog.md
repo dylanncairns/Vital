@@ -479,3 +479,19 @@
 - patched potential leak in connection in db.py and events.py where connection could have failed to be closed on exceptions
 - fixed evaluation of evidence quality score - was not adding up to 1.0 for weighted sums!
 - fixed issue in text-ingestion for timezone handling of daylight savings
+
+## Commit 91 
+- minor performance improvements and touchups    
+    - Spelling: liscencing → licensing
+    - client.ts deleteRecurringExposure now uses fetchWithTimeout instead of a bare fetch 
+    - events.ts:77: is_active: number → is_active: boolean
+    - change resolve_item_id and resolve_symptom_id to use try/finally with conn.close() instead of scattered early-returns
+- changed job worker to run a single batch insert for all completed jobs and status updates rather than executing one by one
+- recurring rules updates
+    - ensure users have recurring rules before execution to reduce unnescessary function calls
+        - added get_recurring_rule(user_id, rule_id) and has_active_recurring_rules(user_id) so /GET doesnt call for no reason if the user has no rules
+    - creating and patching recurring exposures now just call the relevant exposure rather than querying the entirety of rules and then filtering
+- schema updates
+    - NOT NULL added to items.name, ingredients.name, symptoms.name, users.username, users.password_hash, exposure_expansions.ingredient_id
+    - added indexes on claims(symptom_id), exposure_events(user_id), symptom_events(user_id), insights(user_id)
+    - migration 18

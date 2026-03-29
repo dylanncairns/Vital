@@ -226,7 +226,7 @@ export default function AccountScreen() {
             color: "#8C92A6",
           }}
         >
-          Vital does not intend to and does not have liscencing to give medical advice.
+          Vital does not intend to and does not have licensing to give medical advice.
         </Text>
       </View>
     </SafeAreaView>

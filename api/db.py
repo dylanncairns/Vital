@@ -308,6 +308,36 @@ def _migration_003_claims_item_support(conn: Connection) -> None:
     )
 
 
+def _migration_018_not_null_constraints_and_indexes(conn: Connection) -> None:
+    # Add NOT NULL constraints to critical name columns via ALTER TABLE
+    for stmt in [
+        "ALTER TABLE items ALTER COLUMN name SET NOT NULL",
+        "ALTER TABLE ingredients ALTER COLUMN name SET NOT NULL",
+        "ALTER TABLE symptoms ALTER COLUMN name SET NOT NULL",
+        "ALTER TABLE users ALTER COLUMN username SET NOT NULL",
+        "ALTER TABLE users ALTER COLUMN password_hash SET NOT NULL",
+        "ALTER TABLE exposure_expansions ALTER COLUMN ingredient_id SET NOT NULL",
+    ]:
+        try:
+            conn.execute(stmt)
+        except Exception:
+            pass  # column may already be NOT NULL or table not yet created
+
+    # Add missing performance indexes
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_exposure_events_user ON exposure_events(user_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_symptom_events_user ON symptom_events(user_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_insights_user ON insights(user_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_claims_symptom ON claims(symptom_id)"
+    )
+
+
 def _apply_migrations(conn: Connection) -> None:
     migrations: list[Callable[[Connection], None]] = [
         _migration_001_insight_and_rag_scaffolding,
@@ -327,6 +357,7 @@ def _apply_migrations(conn: Connection) -> None:
         _migration_015_claims_evidence_metadata_columns,
         _migration_016_exposure_expansion_uniqueness,
         _migration_017_insights_uniqueness,
+        _migration_018_not_null_constraints_and_indexes,
     ]
     for migration in migrations:
         migration(conn)

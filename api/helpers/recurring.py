@@ -24,6 +24,48 @@ def _parse_iso_utc(value: str | None) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
+def get_recurring_rule(user_id: int, rule_id: int) -> dict[str, Any] | None:
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            """
+            SELECT
+                r.id,
+                r.user_id,
+                r.item_id,
+                i.name AS item_name,
+                r.route,
+                r.start_at,
+                r.interval_hours,
+                r.time_confidence,
+                r.is_active,
+                r.last_generated_at,
+                r.notes,
+                r.created_at,
+                r.updated_at
+            FROM recurring_exposure_rules r
+            JOIN items i ON i.id = r.item_id
+            WHERE r.id = %s AND r.user_id = %s
+            """,
+            (int(rule_id), int(user_id)),
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def has_active_recurring_rules(user_id: int) -> bool:
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM recurring_exposure_rules WHERE user_id = %s AND is_active = 1 LIMIT 1",
+            (int(user_id),),
+        ).fetchone()
+        return row is not None
+    finally:
+        conn.close()
+
+
 def list_recurring_rules(user_id: int) -> list[dict[str, Any]]:
     conn = get_connection()
     try:

@@ -74,7 +74,7 @@ export type RecurringExposureRule = {
   start_at: string;
   interval_hours: number;
   time_confidence?: "exact" | "approx" | "backfilled" | null;
-  is_active: number;
+  is_active: boolean;
   last_generated_at?: string | null;
   notes?: string | null;
   created_at?: string | null;

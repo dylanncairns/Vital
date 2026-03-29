@@ -18,101 +18,101 @@ def resolve_item_id(item_name: str) -> int:
     # normalize input
     normalized = _normalize_name(item_name)
     conn = get_connection()
-    cursor = conn.cursor()
-    # try a canonical match
-    cursor.execute(
-        """
-        SELECT id FROM items
-        WHERE lower(name) = lower(%s)
-        LIMIT 1
-        """,
-        (normalized,),
-    )
-    row = cursor.fetchone()
-    if row:
+    try:
+        cursor = conn.cursor()
+        # try a canonical match
+        cursor.execute(
+            """
+            SELECT id FROM items
+            WHERE lower(name) = lower(%s)
+            LIMIT 1
+            """,
+            (normalized,),
+        )
+        row = cursor.fetchone()
+        if row:
+            return row["id"]
+        # try alias match
+        cursor.execute(
+            """
+            SELECT item_id FROM items_aliases
+            WHERE lower(alias) = lower(%s)
+            LIMIT 1
+            """,
+            (normalized,),
+        )
+        row = cursor.fetchone()
+        if row:
+            return row["item_id"]
+        # if not found, create new canonical name and alias
+        cursor.execute(
+            """
+            INSERT INTO items (name, category)
+            VALUES (%s, %s)
+            RETURNING id
+            """,
+            (normalized, "Uncategorized"),
+        )
+        new_id = cursor.fetchone()["id"]
+        cursor.execute(
+            """
+            INSERT INTO items_aliases (item_id, alias)
+            VALUES (%s, %s)
+            """,
+            (new_id, normalized),
+        )
+        conn.commit()
+        return new_id
+    finally:
         conn.close()
-        return row["id"]
-    # try alias match
-    cursor.execute(
-        """
-        SELECT item_id FROM items_aliases
-        WHERE lower(alias) = lower(%s)
-        LIMIT 1
-        """,
-        (normalized,),
-    )
-    row = cursor.fetchone()
-    if row:
-        conn.close()
-        return row["item_id"]
-    # if not found, create new canonical name and alias
-    cursor.execute(
-        """
-        INSERT INTO items (name, category)
-        VALUES (%s, %s)
-        RETURNING id
-        """,
-        (normalized, "Uncategorized"),
-    )
-    new_id = cursor.fetchone()["id"]
-    cursor.execute(
-        """
-        INSERT INTO items_aliases (item_id, alias)
-        VALUES (%s, %s)
-        """,
-        (new_id, normalized),
-    )
-    conn.commit()
-    conn.close()
-    return new_id
 
 # same thing for symptoms as was done for items
 def resolve_symptom_id(symptom_name: str) -> int:
     normalized = _normalize_name(symptom_name)
     conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        """
-        SELECT id FROM symptoms
-        WHERE lower(name) = lower(%s)
-        LIMIT 1
-        """,
-        (normalized,),
-    )
-    row = cursor.fetchone()
-    if row:
-        conn.close()
-        return row["id"]
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT id FROM symptoms
+            WHERE lower(name) = lower(%s)
+            LIMIT 1
+            """,
+            (normalized,),
+        )
+        row = cursor.fetchone()
+        if row:
+            return row["id"]
 
-    cursor.execute(
-        """
-        SELECT symptom_id FROM symptoms_aliases
-        WHERE lower(alias) = lower(%s)
-        LIMIT 1
-        """,
-        (normalized,),
-    )
-    row = cursor.fetchone()
-    if row:
-        conn.close()
-        return row["symptom_id"]
+        cursor.execute(
+            """
+            SELECT symptom_id FROM symptoms_aliases
+            WHERE lower(alias) = lower(%s)
+            LIMIT 1
+            """,
+            (normalized,),
+        )
+        row = cursor.fetchone()
+        if row:
+            return row["symptom_id"]
 
-    cursor.execute(
-        """
-        INSERT INTO symptoms (name, description)
-        VALUES (%s, %s)
-        RETURNING id
-        """,
-        (normalized, None),
-    )
-    new_id = cursor.fetchone()["id"]
-    cursor.execute(
-        """
-        INSERT INTO symptoms_aliases (symptom_id, alias)
-        VALUES (%s, %s)
-        """,
-        (new_id, normalized),
-    )
-    conn.commit()
-    conn.close()
-    return new_id
+        cursor.execute(
+            """
+            INSERT INTO symptoms (name, description)
+            VALUES (%s, %s)
+            RETURNING id
+            """,
+            (normalized, None),
+        )
+        new_id = cursor.fetchone()["id"]
+        cursor.execute(
+            """
+            INSERT INTO symptoms_aliases (symptom_id, alias)
+            VALUES (%s, %s)
+            """,
+            (new_id, normalized),
+        )
+        conn.commit()
+        return new_id
+    finally:
+        conn.close()

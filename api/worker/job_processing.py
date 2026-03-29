@@ -33,6 +33,27 @@ EVIDENCE_REACQUIRE_DECISION_REASONS = {
 }
 
 
+def _run_sync_claims(candidates: list, max_papers_per_query: int) -> dict:
+    conn = get_connection()
+    try:
+        result = sync_claims_for_candidates(
+            conn,
+            candidates=candidates,
+            ingredient_name_map=fetch_ingredient_name_map(conn),
+            symptom_name_map=fetch_symptom_name_map(conn),
+            item_name_map=fetch_item_name_map(conn),
+            online_enabled=True,
+            max_papers_per_query=max_papers_per_query,
+        )
+        conn.commit()
+        return result
+    except DatabaseError:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def _insight_row_has_no_evidence(row) -> bool:
     if row is None:
         return True
@@ -166,23 +187,7 @@ def process_background_jobs_batch(payload: ProcessJobsIn):
                 }
                 sync_retry_result = None
                 if candidates:
-                    conn = get_connection()
-                    try:
-                        sync_result = sync_claims_for_candidates(
-                            conn,
-                            candidates=candidates,
-                            ingredient_name_map=fetch_ingredient_name_map(conn),
-                            symptom_name_map=fetch_symptom_name_map(conn),
-                            item_name_map=fetch_item_name_map(conn),
-                            online_enabled=True,
-                            max_papers_per_query=payload.max_papers_per_query,
-                        )
-                        conn.commit()
-                    except DatabaseError:
-                        conn.rollback()
-                        raise
-                    finally:
-                        conn.close()
+                    sync_result = _run_sync_claims(candidates, payload.max_papers_per_query)
                     # web search if vector store has no claims regarding a candidate linkage
                     if int(sync_result.get("claims_added", 0)) == 0:
                         ingest_sources_for_candidates(
@@ -191,23 +196,7 @@ def process_background_jobs_batch(payload: ProcessJobsIn):
                             max_queries=6,
                             max_papers_per_query=max(8, payload.max_papers_per_query),
                         )
-                        conn_retry = get_connection()
-                        try:
-                            sync_retry_result = sync_claims_for_candidates(
-                                conn_retry,
-                                candidates=candidates,
-                                ingredient_name_map=fetch_ingredient_name_map(conn_retry),
-                                symptom_name_map=fetch_symptom_name_map(conn_retry),
-                                item_name_map=fetch_item_name_map(conn_retry),
-                                online_enabled=True,
-                                max_papers_per_query=max(8, payload.max_papers_per_query),
-                            )
-                            conn_retry.commit()
-                        except DatabaseError:
-                            conn_retry.rollback()
-                            raise
-                        finally:
-                            conn_retry.close()
+                        sync_retry_result = _run_sync_claims(candidates, max(8, payload.max_papers_per_query))
                 else:
                     raise RuntimeError(
                         "no matching candidate found for queued evidence job "

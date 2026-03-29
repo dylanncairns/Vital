@@ -30,6 +30,8 @@ from api.helpers.resolve import resolve_item_id, resolve_symptom_id
 from api.helpers.recurring import (
     create_recurring_rule,
     delete_recurring_rule,
+    get_recurring_rule,
+    has_active_recurring_rules,
     list_recurring_rules,
     materialize_recurring_exposures,
     update_recurring_rule,
@@ -501,11 +503,10 @@ def create_recurring_exposure(payload: RecurringExposureRuleIn, authorization: O
         time_confidence=payload.time_confidence,
         notes=payload.notes,
     )
-    rows = list_recurring_rules(int(user_id))
-    for row in rows:
-        if int(row["id"]) == int(rule_id):
-            return row
-    raise HTTPException(status_code=500, detail="failed to create recurring rule")
+    row = get_recurring_rule(int(user_id), int(rule_id))
+    if row is None:
+        raise HTTPException(status_code=500, detail="failed to create recurring rule")
+    return row
 
 # edits a reccuring exp rule
 @app.patch("/recurring_exposures/{rule_id}", response_model=RecurringExposureRuleOut)
@@ -538,11 +539,10 @@ def patch_recurring_exposure(
     )
     if not updated:
         raise HTTPException(status_code=404, detail="rule not found")
-    rows = list_recurring_rules(int(user_id))
-    for row in rows:
-        if int(row["id"]) == int(rule_id):
-            return row
-    raise HTTPException(status_code=404, detail="rule not found")
+    row = get_recurring_rule(int(user_id), int(rule_id))
+    if row is None:
+        raise HTTPException(status_code=404, detail="rule not found")
+    return row
 
 # deletes a recurring exp rule
 @app.delete("/recurring_exposures/{rule_id}")
@@ -562,7 +562,11 @@ def get_events(user_id: Optional[int] = None, authorization: Optional[str] = Hea
         explicit_user_id=user_id,
         authorization=authorization,
     )
-    inserted_item_ids = materialize_recurring_exposures(user_id=int(user_id))
+    inserted_item_ids = (
+        materialize_recurring_exposures(user_id=int(user_id))
+        if has_active_recurring_rules(int(user_id))
+        else []
+    )
     if inserted_item_ids:
         enqueue_recompute_jobs_for_items(
             user_id=int(user_id),
