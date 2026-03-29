@@ -495,3 +495,7 @@
     - NOT NULL added to items.name, ingredients.name, symptoms.name, users.username, users.password_hash, exposure_expansions.ingredient_id
     - added indexes on claims(symptom_id), exposure_events(user_id), symptom_events(user_id), insights(user_id)
     - migration 18
+
+## Commit 92
+- previous commit failed automated integration tests as not null constraints caused test user insertion on temp database to fail
+- updated test seeds now aligned with int tests marked needs_db after migration

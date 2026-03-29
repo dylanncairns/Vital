@@ -30,7 +30,7 @@ class InsightsRecomputeTests(unittest.TestCase):
 
     def test_recompute_derives_expected_feature_values(self) -> None:
         self._exec(
-            "INSERT INTO users (id, created_at, name) VALUES (1, '2026-01-01T00:00:00Z', 'u')"
+            "INSERT INTO users (id, created_at, name, username, password_hash) VALUES (1, '2026-01-01T00:00:00Z', 'u', 'u', 'x')"
         )
         self._exec("INSERT INTO items (id, name, category) VALUES (1, 'item', 'cat')")
         self._exec("INSERT INTO symptoms (id, name, description) VALUES (1, 'sym', 'd')")
@@ -161,7 +161,7 @@ class InsightsRecomputeTests(unittest.TestCase):
 
     def test_recompute_ignores_invalid_timestamps_in_events(self) -> None:
         self._exec(
-            "INSERT INTO users (id, created_at, name) VALUES (2, '2026-01-01T00:00:00Z', 'u2')"
+            "INSERT INTO users (id, created_at, name, username, password_hash) VALUES (2, '2026-01-01T00:00:00Z', 'u2', 'u2', 'x')"
         )
         self._exec("INSERT INTO items (id, name, category) VALUES (2, 'item2', 'cat')")
         self._exec("INSERT INTO symptoms (id, name, description) VALUES (2, 'sym2', 'd')")
@@ -191,7 +191,7 @@ class InsightsRecomputeTests(unittest.TestCase):
 
     def test_recompute_item_only_when_no_expansion_rows(self) -> None:
         self._exec(
-            "INSERT INTO users (id, created_at, name) VALUES (3, '2026-01-01T00:00:00Z', 'u3')"
+            "INSERT INTO users (id, created_at, name, username, password_hash) VALUES (3, '2026-01-01T00:00:00Z', 'u3', 'u3', 'x')"
         )
         self._exec("INSERT INTO items (id, name, category) VALUES (3, 'sleep deprivation', 'lifestyle')")
         self._exec("INSERT INTO symptoms (id, name, description) VALUES (3, 'fatigue', 'd')")
@@ -241,7 +241,7 @@ class InsightsRecomputeTests(unittest.TestCase):
 
     def test_recompute_backfills_missing_expansions_for_evidence_retrieval(self) -> None:
         self._exec(
-            "INSERT INTO users (id, created_at, name) VALUES (4, '2026-01-01T00:00:00Z', 'u4')"
+            "INSERT INTO users (id, created_at, name, username, password_hash) VALUES (4, '2026-01-01T00:00:00Z', 'u4', 'u4', 'x')"
         )
         self._exec("INSERT INTO items (id, name, category) VALUES (4, 'sugar drink', 'food')")
         self._exec("INSERT INTO symptoms (id, name, description) VALUES (4, 'acne', 'd')")
@@ -310,7 +310,7 @@ class InsightsRecomputeTests(unittest.TestCase):
 
     def test_recompute_suppresses_single_exposure_even_with_multiple_symptom_hits(self) -> None:
         self._exec(
-            "INSERT INTO users (id, created_at, name) VALUES (5, '2026-01-01T00:00:00Z', 'u5')"
+            "INSERT INTO users (id, created_at, name, username, password_hash) VALUES (5, '2026-01-01T00:00:00Z', 'u5', 'u5', 'x')"
         )
         self._exec("INSERT INTO items (id, name, category) VALUES (5, 'water', 'drink')")
         self._exec("INSERT INTO symptoms (id, name, description) VALUES (5, 'stomachache', 'd')")
@@ -371,7 +371,7 @@ class InsightsRecomputeTests(unittest.TestCase):
 
     def test_recompute_suppresses_generic_work_without_qualifiers(self) -> None:
         self._exec(
-            "INSERT INTO users (id, created_at, name) VALUES (6, '2026-01-01T00:00:00Z', 'u6')"
+            "INSERT INTO users (id, created_at, name, username, password_hash) VALUES (6, '2026-01-01T00:00:00Z', 'u6', 'u6', 'x')"
         )
         self._exec("INSERT INTO items (id, name, category) VALUES (6, 'work', 'behavioral')")
         self._exec("INSERT INTO symptoms (id, name, description) VALUES (6, 'headache', 'd')")

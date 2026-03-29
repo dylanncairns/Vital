@@ -21,8 +21,8 @@ class InsightFeedbackStatsTests(unittest.TestCase):
             conn.close()
 
     def _seed(self) -> None:
-        self._exec("INSERT INTO users (id, created_at, name) VALUES (1, '2026-01-01T00:00:00Z', 'u1')")
-        self._exec("INSERT INTO users (id, created_at, name) VALUES (2, '2026-01-01T00:00:00Z', 'u2')")
+        self._exec("INSERT INTO users (id, created_at, name, username, password_hash) VALUES (1, '2026-01-01T00:00:00Z', 'u1', 'u1', 'x')")
+        self._exec("INSERT INTO users (id, created_at, name, username, password_hash) VALUES (2, '2026-01-01T00:00:00Z', 'u2', 'u2', 'x')")
         self._exec("INSERT INTO items (id, name, category) VALUES (1, 'coffee', 'food')")
         self._exec("INSERT INTO items (id, name, category) VALUES (2, 'milk', 'food')")
         self._exec("INSERT INTO symptoms (id, name, description) VALUES (1, 'headache', 'd')")
@@ -87,7 +87,7 @@ class InsightFeedbackStatsTests(unittest.TestCase):
         self.assertTrue(result["surfaced_only"])
 
     def test_returns_zero_when_no_feedback(self) -> None:
-        self._exec("INSERT INTO users (id, created_at, name) VALUES (3, '2026-01-01T00:00:00Z', 'u3')")
+        self._exec("INSERT INTO users (id, created_at, name, username, password_hash) VALUES (3, '2026-01-01T00:00:00Z', 'u3', 'u3', 'x')")
         result = get_insight_feedback_stats(user_id=3)
         self.assertEqual(result["user_id"], 3)
         self.assertEqual(result["verified_count"], 0)

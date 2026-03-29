@@ -21,7 +21,7 @@ class CitationAuditTests(unittest.TestCase):
             conn.close()
 
     def _seed(self) -> None:
-        self._exec("INSERT INTO users (id, created_at, name) VALUES (1, '2026-01-01T00:00:00Z', 'u')")
+        self._exec("INSERT INTO users (id, created_at, name, username, password_hash) VALUES (1, '2026-01-01T00:00:00Z', 'u', 'u', 'x')")
         self._exec("INSERT INTO items (id, name, category) VALUES (1, 'coffee', 'food')")
         self._exec("INSERT INTO symptoms (id, name, description) VALUES (1, 'headache', 'd')")
         self._exec(
