@@ -241,6 +241,7 @@ def _migration_003_claims_item_support(conn: Connection) -> None:
         )
         return
 
+    conn.execute("DROP TABLE IF EXISTS claims_new")
     conn.execute(
         """
         CREATE TABLE claims_new (

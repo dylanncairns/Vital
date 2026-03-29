@@ -405,6 +405,92 @@ def _load_fusion_calibrator(path: Path = DEFAULT_FUSION_CALIBRATOR_PATH) -> Any 
     return calibrator
 
 
+def _compute_fallback_score(
+    model_probability: float,
+    evidence_quality: float,
+    penalty_score: float,
+) -> float:
+    fallback_base = (0.5 * _clamp01(model_probability)) + (0.5 * _clamp01(evidence_quality))
+    fallback_penalty = _clamp01(penalty_score)
+    fallback_penalty_weight = 0.25 + (0.75 * fallback_penalty)
+    fallback_penalty_impact = fallback_penalty * fallback_penalty_weight
+    return _clamp01(fallback_base - fallback_penalty_impact)
+
+
+def _should_use_fusion(
+    monitor: Any,
+    guardrails: dict[str, float],
+    model_path: Path,
+    calibrator_path: Path,
+) -> bool:
+    if not isinstance(monitor, dict):
+        return False
+    metrics = monitor.get("metrics")
+    if isinstance(metrics, dict):
+        rows = float(metrics.get("rows", 0.0))
+        positives = float(metrics.get("positives", 0.0))
+        negatives = float(metrics.get("negatives", 0.0))
+        high_conf_ratio = float(metrics.get("high_conf_ratio", 0.0))
+        brier = float(metrics.get("brier", 1.0))
+        promoted = bool(monitor.get("promoted", False))
+        # Require meaningful validation coverage before using learned fusion in production scoring.
+        if (
+            (not promoted)
+            or rows < max(100.0, guardrails["runtime_min_guardrail_rows"])
+            or positives < max(20.0, guardrails["runtime_min_guardrail_positives"])
+            or negatives < max(20.0, guardrails["runtime_min_guardrail_negatives"])
+        ):
+            return False
+        # Guardrail only on statistically meaningful validation runs.
+        if rows >= 100.0 and positives >= 20.0 and negatives >= 20.0 and (
+            high_conf_ratio > 0.85 or brier > 0.22
+        ):
+            return False
+    versions = monitor.get("versions")
+    if isinstance(versions, dict):
+        monitor_model = versions.get("fusion_model")
+        monitor_calibrator = versions.get("fusion_calibrator")
+        monitor_thresholds = versions.get("decision_thresholds")
+        current_model = _artifact_fingerprint(model_path)
+        current_calibrator = _artifact_fingerprint(calibrator_path)
+        current_thresholds = _artifact_fingerprint(DEFAULT_THRESHOLDS_PATH)
+        if (
+            isinstance(monitor_model, dict)
+            and isinstance(current_model, dict)
+            and monitor_model.get("sha256")
+            and current_model.get("sha256")
+            and monitor_model.get("sha256") != current_model.get("sha256")
+        ):
+            return False
+        if (
+            isinstance(monitor_calibrator, dict)
+            and isinstance(current_calibrator, dict)
+            and monitor_calibrator.get("sha256")
+            and current_calibrator.get("sha256")
+            and monitor_calibrator.get("sha256") != current_calibrator.get("sha256")
+        ):
+            return False
+        if (
+            isinstance(monitor_thresholds, dict)
+            and isinstance(current_thresholds, dict)
+            and monitor_thresholds.get("sha256")
+            and current_thresholds.get("sha256")
+            and monitor_thresholds.get("sha256") != current_thresholds.get("sha256")
+        ):
+            return False
+    return True
+
+
+def _emit_fusion_output(
+    calibrated_value: float,
+    fallback_score: float,
+    guardrails: dict[str, float],
+) -> float:
+    output = _clamp01((0.65 * _clamp01(calibrated_value)) + (0.35 * fallback_score))
+    _RUNTIME_FUSION_OUTPUTS.append(output)
+    return _runtime_guardrail_output(output, fallback_score, guardrails)
+
+
 def predict_final_score(
     *,
     model_probability: float,
@@ -415,75 +501,14 @@ def predict_final_score(
     model_path: Path = DEFAULT_FUSION_MODEL_PATH,
     calibrator_path: Path = DEFAULT_FUSION_CALIBRATOR_PATH,
 ) -> float:
-    fallback_base = (0.5 * _clamp01(model_probability)) + (0.5 * _clamp01(evidence_quality))
-    fallback_penalty = _clamp01(penalty_score)
-    fallback_penalty_weight = 0.25 + (0.75 * fallback_penalty)
-    fallback_penalty_impact = fallback_penalty * fallback_penalty_weight
-    fallback_score = _clamp01(fallback_base - fallback_penalty_impact)
+    fallback_score = _compute_fallback_score(model_probability, evidence_quality, penalty_score)
 
     model = _load_fusion_model(model_path)
     calibrator = _load_fusion_calibrator(calibrator_path)
     monitor = load_fusion_monitor()
     guardrails = load_score_guardrails()
-    use_fusion = model is not None
-    if isinstance(monitor, dict):
-        metrics = monitor.get("metrics")
-        if isinstance(metrics, dict):
-            rows = float(metrics.get("rows", 0.0))
-            positives = float(metrics.get("positives", 0.0))
-            negatives = float(metrics.get("negatives", 0.0))
-            high_conf_ratio = float(metrics.get("high_conf_ratio", 0.0))
-            brier = float(metrics.get("brier", 1.0))
-            promoted = bool(monitor.get("promoted", False))
-            # Require meaningful validation coverage before using learned fusion in production scoring.
-            if (
-                (not promoted)
-                or rows < max(100.0, guardrails["runtime_min_guardrail_rows"])
-                or positives < max(20.0, guardrails["runtime_min_guardrail_positives"])
-                or negatives < max(20.0, guardrails["runtime_min_guardrail_negatives"])
-            ):
-                use_fusion = False
-            # Guardrail only on statistically meaningful validation runs.
-            if rows >= 100.0 and positives >= 20.0 and negatives >= 20.0 and (
-                high_conf_ratio > 0.85 or brier > 0.22
-            ):
-                use_fusion = False
-        versions = monitor.get("versions")
-        if isinstance(versions, dict):
-            monitor_model = versions.get("fusion_model")
-            monitor_calibrator = versions.get("fusion_calibrator")
-            monitor_thresholds = versions.get("decision_thresholds")
-            current_model = _artifact_fingerprint(model_path)
-            current_calibrator = _artifact_fingerprint(calibrator_path)
-            current_thresholds = _artifact_fingerprint(DEFAULT_THRESHOLDS_PATH)
-            if (
-                isinstance(monitor_model, dict)
-                and isinstance(current_model, dict)
-                and monitor_model.get("sha256")
-                and current_model.get("sha256")
-                and monitor_model.get("sha256") != current_model.get("sha256")
-            ):
-                use_fusion = False
-            if (
-                isinstance(monitor_calibrator, dict)
-                and isinstance(current_calibrator, dict)
-                and monitor_calibrator.get("sha256")
-                and current_calibrator.get("sha256")
-                and monitor_calibrator.get("sha256") != current_calibrator.get("sha256")
-            ):
-                use_fusion = False
-            if (
-                isinstance(monitor_thresholds, dict)
-                and isinstance(current_thresholds, dict)
-                and monitor_thresholds.get("sha256")
-                and current_thresholds.get("sha256")
-                and monitor_thresholds.get("sha256") != current_thresholds.get("sha256")
-            ):
-                use_fusion = False
-    else:
-        use_fusion = False
 
-    if not use_fusion:
+    if model is None or not _should_use_fusion(monitor, guardrails, model_path, calibrator_path):
         return fallback_score
 
     row = _build_fusion_feature_row(
@@ -494,39 +519,22 @@ def predict_final_score(
         contradict_ratio=contradict_ratio,
     )
     raw = float(model.predict_proba([row])[0][1])
-    if calibrator is None:
-        output = _clamp01((0.65 * _clamp01(raw)) + (0.35 * fallback_score))
-        _RUNTIME_FUSION_OUTPUTS.append(output)
-        return _runtime_guardrail_output(output, fallback_score, guardrails)
-    if _calibrator_is_saturated(calibrator):
-        output = _clamp01((0.65 * _clamp01(raw)) + (0.35 * fallback_score))
-        _RUNTIME_FUSION_OUTPUTS.append(output)
-        return _runtime_guardrail_output(output, fallback_score, guardrails)
+
+    if calibrator is None or _calibrator_is_saturated(calibrator):
+        return _emit_fusion_output(raw, fallback_score, guardrails)
+
     if isinstance(calibrator, dict) and calibrator.get("type") == "sigmoid":
         cal_model = calibrator.get("model")
         try:
             calibrated = cal_model.predict_proba([[_clamp01(raw)]])[:, 1]
-            if len(calibrated) > 0:
-                blended = (0.65 * _clamp01(float(calibrated[0]))) + (0.35 * fallback_score)
-                output = _clamp01(blended)
-                _RUNTIME_FUSION_OUTPUTS.append(output)
-                return _runtime_guardrail_output(output, fallback_score, guardrails)
-            output = _clamp01((0.65 * _clamp01(raw)) + (0.35 * fallback_score))
-            _RUNTIME_FUSION_OUTPUTS.append(output)
-            return _runtime_guardrail_output(output, fallback_score, guardrails)
+            val = float(calibrated[0]) if len(calibrated) > 0 else raw
         except Exception:
-            output = _clamp01((0.65 * _clamp01(raw)) + (0.35 * fallback_score))
-            _RUNTIME_FUSION_OUTPUTS.append(output)
-            return _runtime_guardrail_output(output, fallback_score, guardrails)
+            val = raw
+        return _emit_fusion_output(val, fallback_score, guardrails)
+
     calibrated = calibrator.predict([_clamp01(raw)])
-    if len(calibrated) == 0:
-        output = _clamp01((0.65 * _clamp01(raw)) + (0.35 * fallback_score))
-        _RUNTIME_FUSION_OUTPUTS.append(output)
-        return _runtime_guardrail_output(output, fallback_score, guardrails)
-    blended = (0.65 * _clamp01(float(calibrated[0]))) + (0.35 * fallback_score)
-    output = _clamp01(blended)
-    _RUNTIME_FUSION_OUTPUTS.append(output)
-    return _runtime_guardrail_output(output, fallback_score, guardrails)
+    val = float(calibrated[0]) if len(calibrated) > 0 else raw
+    return _emit_fusion_output(val, fallback_score, guardrails)
 
 
 def _runtime_guardrail_output(output: float, fallback_score: float, guardrails: dict[str, float]) -> float:

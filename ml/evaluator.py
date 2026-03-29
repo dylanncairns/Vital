@@ -181,16 +181,16 @@ def compute_evidence_quality(evidence: dict[str, Any]) -> dict[str, float]:
     llm_confidence = llm_confidence_sum / citation_count
 
     quality = (
-        0.24 * evidence_strength
-        + 0.12 * citation_coverage
-        + 0.10 * support_ratio
-        + 0.10 * avg_relevance
-        + 0.12 * study_quality
-        + 0.10 * population_match
-        + 0.10 * temporality_match
-        + 0.08 * llm_confidence
+        0.22 * evidence_strength
+        + 0.11 * citation_coverage
+        + 0.09 * support_ratio
+        + 0.09 * avg_relevance
+        + 0.11 * study_quality
+        + 0.09 * population_match
+        + 0.09 * temporality_match
+        + 0.07 * llm_confidence
         + 0.04 * (1.0 - contradict_ratio)
-        + 0.10 * (1.0 - risk_of_bias)
+        + 0.09 * (1.0 - risk_of_bias)
     )
     quality = clamp(quality, 0.0, 1.0)
     return {

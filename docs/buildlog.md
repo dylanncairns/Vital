@@ -474,3 +474,8 @@
         - occurs due to background jobs sometimes overlapping and thus producing identical insights for a candidate upon insert, and not as easily patchable at the worker level
         - best idea is to add unique key to insights table (partially since some fields should be identical) and update on conflict
         - ordered by final score before collapsing duplicates
+
+## Commit 90
+- patched potential leak in connection in db.py and events.py where connection could have failed to be closed on exceptions
+- fixed evaluation of evidence quality score - was not adding up to 1.0 for weighted sums!
+- fixed issue in text-ingestion for timezone handling of daylight savings

@@ -154,16 +154,17 @@ _STRONG_RELATIVE_DATE_RE = re.compile(
     re.I,
 )
 
-_LOCAL_TZ = datetime.now().astimezone().tzinfo or timezone.utc
+def _local_tz():
+    return datetime.now().astimezone().tzinfo or timezone.utc
 
 
 def _tz_from_offset_minutes(offset_minutes: int | None):
     if offset_minutes is None:
-        return _LOCAL_TZ
+        return _local_tz()
     try:
         minutes = int(offset_minutes)
     except (TypeError, ValueError):
-        return _LOCAL_TZ
+        return _local_tz()
     minutes = max(-14 * 60, min(14 * 60, minutes))
     # JS Date.getTimezoneOffset() semantics: UTC - local.
     return timezone(-timedelta(minutes=minutes))
@@ -334,7 +335,7 @@ def _resolve_anaphoric_daypart_time(
         anchor = datetime.fromisoformat(anchor_iso.replace("Z", "+00:00"))
     except ValueError:
         return None
-    tz = local_tz or _LOCAL_TZ
+    tz = local_tz or _local_tz()
     anchor_local = anchor.astimezone(tz)
     if (match.group(1) or "").lower() == "next":
         anchor_local = anchor_local + timedelta(days=1)
@@ -365,7 +366,7 @@ def _resolve_relative_clause_time(
         anchor = datetime.fromisoformat(anchor_iso.replace("Z", "+00:00"))
     except ValueError:
         return None
-    tz = local_tz or _LOCAL_TZ
+    tz = local_tz or _local_tz()
     anchor_local = anchor.astimezone(tz)
     if has_later:
         resolved_local = anchor_local + timedelta(hours=2)
@@ -389,7 +390,7 @@ def _resolve_bedtime_clause_time(
         context_start=context_start,
         context_end=context_end,
     )
-    tz = local_tz or _LOCAL_TZ
+    tz = local_tz or _local_tz()
     if anchor_iso:
         try:
             anchor = datetime.fromisoformat(anchor_iso.replace("Z", "+00:00"))
@@ -427,7 +428,7 @@ def _resolve_sleep_deprivation_clause_time(
         context_start=context_start,
         context_end=context_end,
     )
-    tz = local_tz or _LOCAL_TZ
+    tz = local_tz or _local_tz()
     if anchor_iso:
         try:
             anchor = datetime.fromisoformat(anchor_iso.replace("Z", "+00:00"))
@@ -485,7 +486,7 @@ def _has_strong_date_anchor(text: str) -> bool:
 # identify time from within text blob (safe for voice-to-text where user states timestamp)
 def _parse_time(text: str, *, local_tz=None) -> tuple[str | None, str | None, str | None]:
     # Parse time words as local user-time intent, then convert to UTC for storage.
-    tz = local_tz or _LOCAL_TZ
+    tz = local_tz or _local_tz()
     now = datetime.now().astimezone(tz)
     lower = text.lower()
 
@@ -1165,7 +1166,7 @@ def _coerce_api_timestamp_to_today_if_time_only(
         parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
     except ValueError:
         return timestamp
-    tz = local_tz or _LOCAL_TZ
+    tz = local_tz or _local_tz()
     parsed_local = parsed if parsed.tzinfo is None else parsed.astimezone(tz)
     if parsed_local.tzinfo is None:
         parsed_local = parsed_local.replace(tzinfo=tz)
@@ -1192,7 +1193,7 @@ def _coerce_api_range_to_today_if_time_only(
     if _DATE_TOKEN_RE.search(text):
         return time_range_start, time_range_end
 
-    tz = local_tz or _LOCAL_TZ
+    tz = local_tz or _local_tz()
     now_local = datetime.now().astimezone(tz)
 
     def _coerce(value: str | None) -> str | None:
@@ -1560,35 +1561,213 @@ def _apply_context_to_api_events(
     return out
 
 
-def parse_text_events(text: str, *, local_tz=None) -> list[ParsedEvent]:
-    api_events = parse_with_api_events(text, local_tz=local_tz)
+@dataclass
+class _ParseSignals:
+    should_skip_api_seed: bool
 
-    segments = _split_into_segments(text)
-    if not segments:
-        segments = [text.strip()]
-    text_lower = text.lower()
-    full_text_exposure_signal = (
+
+def _compute_parse_signals(text_lower: str) -> _ParseSignals:
+    has_exposure_signal = (
         _EXPOSURE_VERBS.search(text_lower) is not None
         or (_MEAL_CONTEXT_RE.search(text_lower) is not None and re.search(r"\b(had|have|having)\b", text_lower) is not None)
         or _CONTEXT_EXPOSURE_RE.search(text_lower) is not None
         or _LIFESTYLE_EXPOSURE_RE.search(text_lower) is not None
     )
-    full_text_mixed_signal = full_text_exposure_signal and (
+    has_mixed_signal = has_exposure_signal and (
         _SYMPTOM_CUES_RE.search(text_lower) is not None or _COMMON_SYMPTOM_TERMS_RE.search(text_lower) is not None
     )
-    full_text_time_signal_mentions = (
+    time_mentions = (
         len(_DATE_TOKEN_RE.findall(text_lower))
         + len(_TIME_AT_RE.findall(text_lower))
         + len(_DAYS_AGO_RE.findall(text_lower))
     )
-    should_skip_api_seed = (
-        full_text_mixed_signal
-        and (
-            full_text_time_signal_mentions >= 2
-            or re.search(r"\b(and now|later|after that|afterwards)\b", text_lower) is not None
-            or re.search(r"\band\s+(?:this|next|yesterday)\s+(?:morning|afternoon|evening|night)\b", text_lower) is not None
-        )
+    should_skip_api_seed = has_mixed_signal and (
+        time_mentions >= 2
+        or re.search(r"\b(and now|later|after that|afterwards)\b", text_lower) is not None
+        or re.search(r"\band\s+(?:this|next|yesterday)\s+(?:morning|afternoon|evening|night)\b", text_lower) is not None
     )
+    return _ParseSignals(should_skip_api_seed=should_skip_api_seed)
+
+
+def _process_segment(
+    segment: str,
+    *,
+    last_context_timestamp: str | None,
+    last_context_start: str | None,
+    last_context_end: str | None,
+    seen_keys: set,
+    local_tz,
+    parse_fn,
+) -> tuple[list[ParsedEvent], str | None, str | None, str | None]:
+    new_events: list[ParsedEvent] = []
+
+    def _add_if_new(parsed: ParsedEvent) -> None:
+        key = (
+            parsed.event_type,
+            parsed.timestamp,
+            parsed.time_range_start,
+            parsed.time_range_end,
+            parsed.item_id,
+            parsed.symptom_id,
+            parsed.route,
+        )
+        if key in seen_keys:
+            return
+        seen_keys.add(key)
+        new_events.append(parsed)
+
+    segment_has_strong_date_anchor = _has_strong_date_anchor(segment)
+    seg_ts, seg_start, seg_end = _segment_time_anchor(
+        segment,
+        context_timestamp=last_context_timestamp,
+        context_start=last_context_start,
+        context_end=last_context_end,
+        local_tz=local_tz,
+    )
+    if any([seg_ts, seg_start, seg_end]):
+        last_context_timestamp, last_context_start, last_context_end = seg_ts, seg_start, seg_end
+
+    parsed = parse_fn(segment)
+    segment_lower = segment.lower()
+    has_multi_exposure_clause = re.search(
+        r"\band\s+for\s+(?:breakfast|lunch|dinner)\b",
+        segment_lower,
+    ) is not None
+    has_multiple_exposure_mentions = (
+        len(
+            re.findall(
+                r"\b(ate|eat|eaten|eating|drank|drink|drinking|took|take|taking|smoked|used|use|using|tried|try|trying|apply|applied|had|have|having)\b",
+                # Include newer common grammar patterns so multi-event detection
+                # keeps pace with exposure classification.
+                segment_lower,
+            )
+        )
+        >= 2
+    )
+    segment_exposure_signal = (
+        _EXPOSURE_VERBS.search(segment_lower) is not None
+        or (_MEAL_CONTEXT_RE.search(segment_lower) is not None and re.search(r"\b(had|have|having)\b", segment_lower) is not None)
+        or _CONTEXT_EXPOSURE_RE.search(segment_lower) is not None
+        or _LIFESTYLE_EXPOSURE_RE.search(segment_lower) is not None
+    )
+    has_mixed_signal = segment_exposure_signal and (
+        _SYMPTOM_CUES_RE.search(segment_lower) is not None or _COMMON_SYMPTOM_TERMS_RE.search(segment_lower) is not None
+    )
+    symptom_signal_mentions = len(_COMMON_SYMPTOM_TERMS_RE.findall(segment_lower)) + len(_SYMPTOM_CUES_RE.findall(segment_lower))
+    time_signal_mentions = (
+        len(_DATE_TOKEN_RE.findall(segment_lower))
+        + len(_TIME_AT_RE.findall(segment_lower))
+        + len(_DAYS_AGO_RE.findall(segment_lower))
+    )
+    has_multi_temporal_symptom_clause = (
+        " and " in f" {segment_lower} "
+        and symptom_signal_mentions >= 2
+        and time_signal_mentions >= 2
+    )
+    should_trust_whole_segment_parse = not (
+        has_mixed_signal
+        or has_multi_exposure_clause
+        or has_multiple_exposure_mentions
+        or has_multi_temporal_symptom_clause
+    )
+
+    if parsed is not None:
+        parsed = _apply_time_context(
+            parsed,
+            context_timestamp=seg_ts or last_context_timestamp,
+            context_start=seg_start or last_context_start,
+            context_end=seg_end or last_context_end,
+        )
+        # Prefer clause parsing over whole-segment parse for complex mixed/multi-event segments
+        # to avoid blended artifacts (e.g., first time phrase incorrectly applied to later symptoms).
+        if should_trust_whole_segment_parse:
+            expanded_rows = _expand_multi_item_exposure(parsed, segment)
+            symptom_expanded_rows: list[ParsedEvent] = []
+            for row in expanded_rows:
+                symptom_expanded_rows.extend(_expand_multi_symptom_event(row, segment))
+            for expanded in symptom_expanded_rows:
+                _add_if_new(expanded)
+            return new_events, last_context_timestamp, last_context_start, last_context_end
+
+    # Fallback for mixed blurbs in one sentence: split into clause-like chunks.
+    clauses = [
+        part.strip()
+        for part in re.split(
+            r"\s*(?:,|/|\+|\band then\b|\bthen\b|\band after\b|\bafter\b|\band\b|\band for (?:breakfast|lunch|dinner)\b)\s*",
+            segment,
+            flags=re.I,
+        )
+        if part.strip()
+    ]
+    for clause in clauses:
+        clause_ts, clause_start, clause_end = _parse_time(clause, local_tz=local_tz)
+        anaphoric_clause_ts = _resolve_anaphoric_daypart_time(
+            clause,
+            context_timestamp=last_context_timestamp or seg_ts,
+            context_start=last_context_start or seg_start,
+            context_end=last_context_end or seg_end,
+            local_tz=local_tz,
+        )
+        if anaphoric_clause_ts is not None:
+            clause_ts, clause_start, clause_end = anaphoric_clause_ts, None, None
+        bedtime_clause_ts = _resolve_bedtime_clause_time(
+            clause,
+            context_timestamp=last_context_timestamp or seg_ts,
+            context_start=last_context_start or seg_start,
+            context_end=last_context_end or seg_end,
+            local_tz=local_tz,
+        )
+        if bedtime_clause_ts is not None and clause_ts is None and clause_start is None and clause_end is None:
+            clause_ts, clause_start, clause_end = bedtime_clause_ts, None, None
+        sleep_clause_ts = _resolve_sleep_deprivation_clause_time(
+            clause,
+            context_timestamp=last_context_timestamp or seg_ts,
+            context_start=last_context_start or seg_start,
+            context_end=last_context_end or seg_end,
+            local_tz=local_tz,
+        )
+        if sleep_clause_ts is not None and clause_ts is None and clause_start is None and clause_end is None:
+            clause_ts, clause_start, clause_end = sleep_clause_ts, None, None
+        clause_parsed = parse_fn(clause)
+        if clause_parsed is not None:
+            if anaphoric_clause_ts is not None:
+                clause_parsed = _override_parsed_timestamp(clause_parsed, anaphoric_clause_ts)
+            elif bedtime_clause_ts is not None and clause_parsed.timestamp is None:
+                clause_parsed = _override_parsed_timestamp(clause_parsed, bedtime_clause_ts)
+            elif sleep_clause_ts is not None and clause_parsed.timestamp is None:
+                clause_parsed = _override_parsed_timestamp(clause_parsed, sleep_clause_ts)
+            elif segment_has_strong_date_anchor and not _has_strong_date_anchor(clause):
+                # Preserve explicit segment-level date anchor (e.g., "On February 10 ...")
+                # for weak daypart-only clauses split from the same sentence.
+                clause_ts, clause_start, clause_end = seg_ts, seg_start, seg_end
+                if seg_ts is not None:
+                    clause_parsed = _override_parsed_timestamp(clause_parsed, seg_ts)
+            clause_parsed = _apply_time_context(
+                clause_parsed,
+                context_timestamp=clause_ts or last_context_timestamp or seg_ts,
+                context_start=clause_start or last_context_start or seg_start,
+                context_end=clause_end or last_context_end or seg_end,
+            )
+            expanded_rows = _expand_multi_item_exposure(clause_parsed, clause)
+            symptom_expanded_rows: list[ParsedEvent] = []
+            for row in expanded_rows:
+                symptom_expanded_rows.extend(_expand_multi_symptom_event(row, clause))
+            for expanded in symptom_expanded_rows:
+                _add_if_new(expanded)
+                if _has_time_info(expanded):
+                    last_context_timestamp = expanded.timestamp
+                    last_context_start = expanded.time_range_start
+                    last_context_end = expanded.time_range_end
+    return new_events, last_context_timestamp, last_context_start, last_context_end
+
+
+def parse_text_events(text: str, *, local_tz=None) -> list[ParsedEvent]:
+    api_events = parse_with_api_events(text, local_tz=local_tz)
+    segments = _split_into_segments(text)
+    if not segments:
+        segments = [text.strip()]
+    signals = _compute_parse_signals(text.lower())
+
     parsed_events: list[ParsedEvent] = []
     seen_keys: set[tuple[str, str | None, str | None, str | None, int | None, int | None, str | None]] = set()
     last_context_timestamp: str | None = None
@@ -1620,7 +1799,7 @@ def parse_text_events(text: str, *, local_tz=None) -> list[ParsedEvent]:
 
     # Prefer API extraction on long blurbs, but reinforce missing time context using
     # deterministic segment anchors so API rows do not lose relative daypart intent.
-    if api_events and not should_skip_api_seed:
+    if api_events and not signals.should_skip_api_seed:
         for parsed in _apply_context_to_api_events(text=text, api_events=api_events, local_tz=local_tz):
             expanded_rows = _expand_multi_item_exposure(parsed, parsed.source_text or text)
             symptom_expanded_rows: list[ParsedEvent] = []
@@ -1634,148 +1813,16 @@ def parse_text_events(text: str, *, local_tz=None) -> list[ParsedEvent]:
                     last_context_end = expanded.time_range_end
 
     for segment in segments:
-        segment_has_strong_date_anchor = _has_strong_date_anchor(segment)
-        seg_ts, seg_start, seg_end = _segment_time_anchor(
+        new_events, last_context_timestamp, last_context_start, last_context_end = _process_segment(
             segment,
-            context_timestamp=last_context_timestamp,
-            context_start=last_context_start,
-            context_end=last_context_end,
+            last_context_timestamp=last_context_timestamp,
+            last_context_start=last_context_start,
+            last_context_end=last_context_end,
+            seen_keys=seen_keys,
             local_tz=local_tz,
+            parse_fn=_parse_event_without_api,
         )
-        if any([seg_ts, seg_start, seg_end]):
-            last_context_timestamp, last_context_start, last_context_end = seg_ts, seg_start, seg_end
-        parsed = _parse_event_without_api(segment)
-        segment_lower = segment.lower()
-        has_multi_exposure_clause = re.search(
-            r"\band\s+for\s+(?:breakfast|lunch|dinner)\b",
-            segment_lower,
-        ) is not None
-        has_multiple_exposure_mentions = (
-            len(
-                re.findall(
-                    r"\b(ate|eat|eaten|eating|drank|drink|drinking|took|take|taking|smoked|used|use|using|tried|try|trying|apply|applied|had|have|having)\b",
-                    # Include newer common grammar patterns so multi-event detection
-                    # keeps pace with exposure classification.
-                    segment_lower,
-                )
-            )
-            >= 2
-        )
-        segment_exposure_signal = (
-            _EXPOSURE_VERBS.search(segment_lower) is not None
-            or (_MEAL_CONTEXT_RE.search(segment_lower) is not None and re.search(r"\b(had|have|having)\b", segment_lower) is not None)
-            or _CONTEXT_EXPOSURE_RE.search(segment_lower) is not None
-            or _LIFESTYLE_EXPOSURE_RE.search(segment_lower) is not None
-        )
-        has_mixed_signal = segment_exposure_signal and (
-            _SYMPTOM_CUES_RE.search(segment_lower) is not None or _COMMON_SYMPTOM_TERMS_RE.search(segment_lower) is not None
-        )
-        symptom_signal_mentions = len(_COMMON_SYMPTOM_TERMS_RE.findall(segment_lower)) + len(_SYMPTOM_CUES_RE.findall(segment_lower))
-        time_signal_mentions = (
-            len(_DATE_TOKEN_RE.findall(segment_lower))
-            + len(_TIME_AT_RE.findall(segment_lower))
-            + len(_DAYS_AGO_RE.findall(segment_lower))
-        )
-        has_multi_temporal_symptom_clause = (
-            " and " in f" {segment_lower} "
-            and symptom_signal_mentions >= 2
-            and time_signal_mentions >= 2
-        )
-
-        should_trust_whole_segment_parse = not (
-            has_mixed_signal
-            or has_multi_exposure_clause
-            or has_multiple_exposure_mentions
-            or has_multi_temporal_symptom_clause
-        )
-
-        if parsed is not None:
-            parsed = _apply_time_context(
-                parsed,
-                context_timestamp=seg_ts or last_context_timestamp,
-                context_start=seg_start or last_context_start,
-                context_end=seg_end or last_context_end,
-            )
-            # Prefer clause parsing over whole-segment parse for complex mixed/multi-event segments
-            # to avoid blended artifacts (e.g., first time phrase incorrectly applied to later symptoms).
-            if should_trust_whole_segment_parse:
-                expanded_rows = _expand_multi_item_exposure(parsed, segment)
-                symptom_expanded_rows: list[ParsedEvent] = []
-                for row in expanded_rows:
-                    symptom_expanded_rows.extend(_expand_multi_symptom_event(row, segment))
-                for expanded in symptom_expanded_rows:
-                    _append_if_new(expanded)
-            if should_trust_whole_segment_parse:
-                continue
-        # Fallback for mixed blurbs in one sentence: split into clause-like chunks.
-        clauses = [
-            part.strip()
-            for part in re.split(
-                r"\s*(?:,|/|\+|\band then\b|\bthen\b|\band after\b|\bafter\b|\band\b|\band for (?:breakfast|lunch|dinner)\b)\s*",
-                segment,
-                flags=re.I,
-            )
-            if part.strip()
-        ]
-        for clause in clauses:
-            clause_ts, clause_start, clause_end = _parse_time(clause, local_tz=local_tz)
-            anaphoric_clause_ts = _resolve_anaphoric_daypart_time(
-                clause,
-                context_timestamp=last_context_timestamp or seg_ts,
-                context_start=last_context_start or seg_start,
-                context_end=last_context_end or seg_end,
-                local_tz=local_tz,
-            )
-            if anaphoric_clause_ts is not None:
-                clause_ts, clause_start, clause_end = anaphoric_clause_ts, None, None
-            bedtime_clause_ts = _resolve_bedtime_clause_time(
-                clause,
-                context_timestamp=last_context_timestamp or seg_ts,
-                context_start=last_context_start or seg_start,
-                context_end=last_context_end or seg_end,
-                local_tz=local_tz,
-            )
-            if bedtime_clause_ts is not None and clause_ts is None and clause_start is None and clause_end is None:
-                clause_ts, clause_start, clause_end = bedtime_clause_ts, None, None
-            sleep_clause_ts = _resolve_sleep_deprivation_clause_time(
-                clause,
-                context_timestamp=last_context_timestamp or seg_ts,
-                context_start=last_context_start or seg_start,
-                context_end=last_context_end or seg_end,
-                local_tz=local_tz,
-            )
-            if sleep_clause_ts is not None and clause_ts is None and clause_start is None and clause_end is None:
-                clause_ts, clause_start, clause_end = sleep_clause_ts, None, None
-            clause_parsed = _parse_event_without_api(clause)
-            if clause_parsed is not None:
-                if anaphoric_clause_ts is not None:
-                    clause_parsed = _override_parsed_timestamp(clause_parsed, anaphoric_clause_ts)
-                elif bedtime_clause_ts is not None and clause_parsed.timestamp is None:
-                    clause_parsed = _override_parsed_timestamp(clause_parsed, bedtime_clause_ts)
-                elif sleep_clause_ts is not None and clause_parsed.timestamp is None:
-                    clause_parsed = _override_parsed_timestamp(clause_parsed, sleep_clause_ts)
-                elif segment_has_strong_date_anchor and not _has_strong_date_anchor(clause):
-                    # Preserve explicit segment-level date anchor (e.g., "On February 10 ...")
-                    # for weak daypart-only clauses split from the same sentence.
-                    clause_ts, clause_start, clause_end = seg_ts, seg_start, seg_end
-                    if seg_ts is not None:
-                        clause_parsed = _override_parsed_timestamp(clause_parsed, seg_ts)
-                clause_parsed = _apply_time_context(
-                    clause_parsed,
-                    context_timestamp=clause_ts or last_context_timestamp or seg_ts,
-                    context_start=clause_start or last_context_start or seg_start,
-                    context_end=clause_end or last_context_end or seg_end,
-                )
-                expanded_rows = _expand_multi_item_exposure(clause_parsed, clause)
-                symptom_expanded_rows: list[ParsedEvent] = []
-                for row in expanded_rows:
-                    symptom_expanded_rows.extend(_expand_multi_symptom_event(row, clause))
-                for expanded in symptom_expanded_rows:
-                    _append_if_new(expanded)
-                    if _has_time_info(expanded):
-                        last_context_timestamp = expanded.timestamp
-                        last_context_start = expanded.time_range_start
-                        last_context_end = expanded.time_range_end
+        parsed_events.extend(new_events)
     return parsed_events
 
 

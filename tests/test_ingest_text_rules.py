@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from datetime import timezone
 
 import ingestion.ingest_text as ingest_text_mod
 
@@ -127,16 +128,15 @@ class IngestTextRulesTest(unittest.TestCase):
         self.assertIn(delta_days, {0, 1, 2})
 
     def test_parse_time_at_hour_respects_absolute_date_anchor(self) -> None:
-        ts, start, end = ingest_text_mod._parse_time("On February 10, I drank water at 9am.")
+        ts, start, end = ingest_text_mod._parse_time("On February 10, I drank water at 9am.", local_tz=timezone.utc)
         self.assertIsNotNone(ts)
         self.assertIsNone(start)
         self.assertIsNone(end)
         assert ts is not None
         parsed = ingest_text_mod.datetime.fromisoformat(ts.replace("Z", "+00:00"))
-        local = parsed.astimezone()
-        self.assertEqual(local.month, 2)
-        self.assertEqual(local.day, 10)
-        self.assertEqual(local.hour, 9)
+        self.assertEqual(parsed.month, 2)
+        self.assertEqual(parsed.day, 10)
+        self.assertEqual(parsed.hour, 9)
 
     def test_clean_candidate_strips_also_prefix(self) -> None:
         self.assertEqual(ingest_text_mod._clean_candidate_text("also weed"), "weed")
@@ -221,7 +221,7 @@ class IngestTextRulesTest(unittest.TestCase):
         ingest_text_mod.resolve_item_id = lambda name: item_ids.get(name)
         ingest_text_mod.resolve_symptom_id = lambda _name: None
         text = "On February 10, I had mango in the evening, and I also smoked weed that evening."
-        rows = ingest_text_mod.parse_text_events(text)
+        rows = ingest_text_mod.parse_text_events(text, local_tz=timezone.utc)
         exposure_rows = [row for row in rows if row.event_type == "exposure" and row.item_id in {91, 92}]
         self.assertEqual({row.item_id for row in exposure_rows}, {91, 92})
         self.assertEqual(len(exposure_rows), 2)
@@ -229,10 +229,9 @@ class IngestTextRulesTest(unittest.TestCase):
             self.assertIsNotNone(row.timestamp)
             assert row.timestamp is not None
             parsed = ingest_text_mod.datetime.fromisoformat(str(row.timestamp).replace("Z", "+00:00"))
-            local = parsed.astimezone()
-            self.assertEqual(local.month, 2)
-            self.assertEqual(local.day, 10)
-            self.assertEqual(local.hour, 19)
+            self.assertEqual(parsed.month, 2)
+            self.assertEqual(parsed.day, 10)
+            self.assertEqual(parsed.hour, 19)
 
     def test_infer_route_poor_sleep_not_ingestion(self) -> None:
         self.assertEqual(ingest_text_mod._infer_route("had poor sleep that night"), "behavioral")
